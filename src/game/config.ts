@@ -7,7 +7,7 @@ export function createGame(parent: string): Phaser.Game {
     parent,
     width: 960,
     height: 640,
-    backgroundColor: '#0f172a',
+    backgroundColor: '#3b5272',
     scene: [GameScene],
     scale: {
       mode: Phaser.Scale.FIT,
