@@ -21,6 +21,12 @@ const BUFF_INTERVAL_MIN = 45_000;
 const BUFF_INTERVAL_MAX = 90_000;
 const BUFF_REWARD = 100;
 
+const PHASE2_AT = 15_000;
+const SANCTIONS_INCOME_PENALTY = 0.25;
+const SANCTIONS_PRICE_MARKUP = 0.25;
+const SANCTIONS_INCOME_PCT = Math.round(SANCTIONS_INCOME_PENALTY * 100);
+const SANCTIONS_PRICE_PCT = Math.round(SANCTIONS_PRICE_MARKUP * 100);
+
 interface UpgradeRow {
   def: UpgradeDef;
   bg: Phaser.GameObjects.Rectangle;
@@ -45,10 +51,13 @@ export class GameScene extends Phaser.Scene {
   private buffEndsAt = 0;
   private nextBuffAt = BUFF_FIRST_AT;
 
+  private sanctions = false;
+
   private paper!: Phaser.GameObjects.Rectangle;
   private paperGroup!: Phaser.GameObjects.Container;
   private powerText!: Phaser.GameObjects.Text;
   private statsText!: Phaser.GameObjects.Text;
+  private sanctionsText!: Phaser.GameObjects.Text;
   private bannerBg!: Phaser.GameObjects.Rectangle;
   private bannerText!: Phaser.GameObjects.Text;
   private disperseBtn!: Phaser.GameObjects.Rectangle;
@@ -79,6 +88,7 @@ export class GameScene extends Phaser.Scene {
     this.nextWarningAt = FIRST_WARNING_AT;
     this.buffAvailable = false;
     this.nextBuffAt = BUFF_FIRST_AT;
+    this.sanctions = false;
     this.loadProgress();
 
     const { width } = this.scale;
@@ -92,6 +102,10 @@ export class GameScene extends Phaser.Scene {
       .setOrigin(0.5, 0);
     this.statsText = this.add
       .text(width / 2, 94, '', { fontFamily: FONT, fontSize: '16px', color: '#e8eef7', align: 'center' })
+      .setOrigin(0.5, 0);
+
+    this.sanctionsText = this.add
+      .text(width / 2, 116, '', { fontFamily: FONT, fontSize: '13px', color: '#fde047', fontStyle: 'bold' })
       .setOrigin(0.5, 0);
 
     this.createDocument(190, 350);
@@ -143,7 +157,8 @@ export class GameScene extends Phaser.Scene {
   }
 
   private get perSecond(): number {
-    return UPGRADES.reduce((sum, u) => (u.kind === 'passive' ? sum + u.value * this.count(u.id) : sum), 0);
+    const base = UPGRADES.reduce((sum, u) => (u.kind === 'passive' ? sum + u.value * this.count(u.id) : sum), 0);
+    return this.sanctions ? base * (1 - SANCTIONS_INCOME_PENALTY) : base;
   }
 
   private get drain(): number {
@@ -157,13 +172,18 @@ export class GameScene extends Phaser.Scene {
     return Math.ceil(flat + DISPERSE_COST_INCOME_SECONDS * this.perSecond);
   }
 
+  private costOf(def: UpgradeDef): number {
+    const base = upgradeCost(def, this.count(def.id));
+    return Math.ceil(this.sanctions ? base * (1 + SANCTIONS_PRICE_MARKUP) : base);
+  }
+
   private count(id: string): number {
     return this.owned[id] ?? 0;
   }
 
   private buy(def: UpgradeDef): void {
     if (this.gameOver || this.paused) return;
-    const cost = upgradeCost(def, this.count(def.id));
+    const cost = this.costOf(def);
     if (this.power < cost) {
       this.cameras.main.shake(80, 0.002);
       return;
@@ -174,6 +194,15 @@ export class GameScene extends Phaser.Scene {
   }
 
   private updateEvent(): void {
+    if (!this.sanctions && this.elapsed >= PHASE2_AT) {
+      this.sanctions = true;
+      this.cameras.main.shake(300, 0.005);
+      this.showToast(
+        `⚠ Против в вас ввели САНКЦИИ\nДоход −${SANCTIONS_INCOME_PCT}%, цены улучшений +${SANCTIONS_PRICE_PCT}%`,
+        0xea580c,
+      );
+    }
+
     if (this.rallyAt === null && this.elapsed >= this.nextWarningAt) {
       this.rallyAt = this.nextWarningAt + WARNING_LEAD;
       this.cameras.main.flash(300, 255, 160, 0);
@@ -338,6 +367,19 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
+  private updateSanctionsText(): void {
+    if (this.sanctions) {
+      this.sanctionsText.setText(`Санкции: доход −${SANCTIONS_INCOME_PCT}%, цены +${SANCTIONS_PRICE_PCT}%`);
+      this.sanctionsText.setColor('#fecaca');
+      return;
+    }
+    const total = Math.ceil(Math.max(0, PHASE2_AT - this.elapsed) / 1000);
+    const minutes = Math.floor(total / 60);
+    const time = minutes > 0 ? `${minutes}:${(total % 60).toString().padStart(2, '0')}` : `${total} с`;
+    this.sanctionsText.setText(`До второй фазы: ${time}`);
+    this.sanctionsText.setColor('#fde047');
+  }
+
   private updateBuffUi(): void {
     if (!this.buffAvailable) return;
     const left = Math.max(0, this.buffEndsAt - this.elapsed);
@@ -424,17 +466,17 @@ export class GameScene extends Phaser.Scene {
       this.buffsText.setText('Нет активных баффов.');
     }
 
-    if (this.rallyActive) {
-      this.debuffsText.setText(
-        [
-          `• Митинг оппозиции (волна ${this.wave})`,
-          `   −${formatNumber(this.drain)} Гос.власти в секунду`,
-          `   Разогнать: ${formatNumber(this.disperseCost)} Гос.власти`,
-        ].join('\n'),
-      );
-    } else {
-      this.debuffsText.setText('Нет активных дебаффов.');
+    const debuffs: string[] = [];
+    if (this.sanctions) {
+      debuffs.push('• Санкции', `   Доход −${SANCTIONS_INCOME_PCT}%, цены улучшений +${SANCTIONS_PRICE_PCT}%`);
     }
+    if (this.rallyActive) {
+      debuffs.push(
+        `• Митинг оппозиции (волна ${this.wave}): −${formatNumber(this.drain)}/с`,
+        `   Разогнать: ${formatNumber(this.disperseCost)} Гос.власти`,
+      );
+    }
+    this.debuffsText.setText(debuffs.length ? debuffs.join('\n') : 'Нет активных дебаффов.');
   }
 
   private togglePause(): void {
@@ -650,7 +692,7 @@ export class GameScene extends Phaser.Scene {
     this.statsText.setColor(net < 0 ? '#fecaca' : '#e8eef7');
 
     for (const row of this.rows) {
-      const cost = upgradeCost(row.def, this.count(row.def.id));
+      const cost = this.costOf(row.def);
       const affordable = this.power >= cost;
       row.cost.setText(formatNumber(cost));
       row.cost.setColor(affordable ? '#fde047' : '#fecaca');
@@ -659,6 +701,7 @@ export class GameScene extends Phaser.Scene {
       row.name.setAlpha(affordable ? 1 : 0.8);
     }
 
+    this.updateSanctionsText();
     this.updateBanner();
     this.updateBuffUi();
     this.updateEffectsWindow();
