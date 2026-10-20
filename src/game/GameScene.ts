@@ -21,7 +21,7 @@ const BUFF_INTERVAL_MIN = 45_000;
 const BUFF_INTERVAL_MAX = 90_000;
 const BUFF_REWARD = 100;
 
-const PHASE2_AT = 15_000;
+const PHASE2_POWER = 100;
 const SANCTIONS_INCOME_PENALTY = 0.25;
 const SANCTIONS_PRICE_MARKUP = 0.25;
 const SANCTIONS_INCOME_PCT = Math.round(SANCTIONS_INCOME_PENALTY * 100);
@@ -105,7 +105,7 @@ export class GameScene extends Phaser.Scene {
       .setOrigin(0.5, 0);
 
     this.sanctionsText = this.add
-      .text(width / 2, 116, '', { fontFamily: FONT, fontSize: '13px', color: '#fde047', fontStyle: 'bold' })
+      .text(width / 2, 116, '', { fontFamily: FONT, fontSize: '13px', color: '#fecaca', fontStyle: 'bold' })
       .setOrigin(0.5, 0);
 
     this.createDocument(190, 350);
@@ -194,11 +194,11 @@ export class GameScene extends Phaser.Scene {
   }
 
   private updateEvent(): void {
-    if (!this.sanctions && this.elapsed >= PHASE2_AT) {
+    if (!this.sanctions && this.power >= PHASE2_POWER) {
       this.sanctions = true;
       this.cameras.main.shake(300, 0.005);
       this.showToast(
-        `⚠ Против в вас ввели САНКЦИИ\nДоход −${SANCTIONS_INCOME_PCT}%, цены улучшений +${SANCTIONS_PRICE_PCT}%`,
+        `⚠ Против вас ввели САНКЦИИ\nДоход −${SANCTIONS_INCOME_PCT}%, цены улучшений +${SANCTIONS_PRICE_PCT}%`,
         0xea580c,
       );
     }
@@ -368,16 +368,8 @@ export class GameScene extends Phaser.Scene {
   }
 
   private updateSanctionsText(): void {
-    if (this.sanctions) {
-      this.sanctionsText.setText(`Санкции: доход −${SANCTIONS_INCOME_PCT}%, цены +${SANCTIONS_PRICE_PCT}%`);
-      this.sanctionsText.setColor('#fecaca');
-      return;
-    }
-    const total = Math.ceil(Math.max(0, PHASE2_AT - this.elapsed) / 1000);
-    const minutes = Math.floor(total / 60);
-    const time = minutes > 0 ? `${minutes}:${(total % 60).toString().padStart(2, '0')}` : `${total} с`;
-    this.sanctionsText.setText(`До второй фазы: ${time}`);
-    this.sanctionsText.setColor('#fde047');
+    if (!this.sanctions) return;
+    this.sanctionsText.setText(`Санкции: доход −${SANCTIONS_INCOME_PCT}%, цены +${SANCTIONS_PRICE_PCT}%`);
   }
 
   private updateBuffUi(): void {
