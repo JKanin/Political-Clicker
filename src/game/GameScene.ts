@@ -34,6 +34,7 @@ export class GameScene extends Phaser.Scene {
   private owned: Record<string, number> = {};
   private elapsed = 0;
   private gameOver = false;
+  private paused = false;
 
   private wave = 0;
   private rallyActive = false;
@@ -53,6 +54,7 @@ export class GameScene extends Phaser.Scene {
   private disperseBtn!: Phaser.GameObjects.Rectangle;
   private disperseText!: Phaser.GameObjects.Text;
   private effectsWindow!: Phaser.GameObjects.Container;
+  private pauseOverlay!: Phaser.GameObjects.Container;
   private buffButton!: Phaser.GameObjects.Container;
   private buffLabel!: Phaser.GameObjects.Text;
   private buffBar!: Phaser.GameObjects.Rectangle;
@@ -69,6 +71,8 @@ export class GameScene extends Phaser.Scene {
     this.rows = [];
     this.elapsed = 0;
     this.gameOver = false;
+    this.paused = false;
+    this.tweens.resumeAll();
     this.wave = 0;
     this.rallyActive = false;
     this.rallyAt = null;
@@ -95,6 +99,8 @@ export class GameScene extends Phaser.Scene {
     this.createBanner();
     this.createBuffButton();
     this.createEffectsWindow();
+    this.createRestartButton();
+    this.createPauseOverlay();
 
     this.add
       .text(190, 172, 'КЛИКАЙ ПО ДОКУМЕНТУ\nили ЖМИ ПРОБЕЛ', {
@@ -108,12 +114,14 @@ export class GameScene extends Phaser.Scene {
 
     this.input.keyboard?.on('keydown-SPACE', () => this.click(190, 320));
     this.input.keyboard?.on('keydown-E', () => this.toggleEffects());
+    this.input.keyboard?.on('keydown-P', () => this.togglePause());
+    this.input.keyboard?.on('keydown-ESC', () => this.togglePause());
     this.time.addEvent({ delay: 5000, loop: true, callback: () => this.saveProgress() });
     this.refresh();
   }
 
   update(_time: number, delta: number): void {
-    if (this.gameOver) return;
+    if (this.gameOver || this.paused) return;
 
     this.elapsed += delta;
     this.updateEvent();
@@ -154,7 +162,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private buy(def: UpgradeDef): void {
-    if (this.gameOver) return;
+    if (this.gameOver || this.paused) return;
     const cost = upgradeCost(def, this.count(def.id));
     if (this.power < cost) {
       this.cameras.main.shake(80, 0.002);
@@ -192,7 +200,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private disperse(): void {
-    if (!this.rallyActive || this.gameOver) return;
+    if (!this.rallyActive || this.gameOver || this.paused) return;
 
     const cost = this.disperseCost;
     if (this.power < cost) {
@@ -303,7 +311,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private collectBuff(): void {
-    if (!this.buffAvailable || this.gameOver) return;
+    if (!this.buffAvailable || this.gameOver || this.paused) return;
 
     this.power += BUFF_REWARD;
     this.buffAvailable = false;
@@ -393,7 +401,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private toggleEffects(): void {
-    if (this.gameOver) return;
+    if (this.gameOver || this.paused) return;
     this.effectsWindow.setVisible(!this.effectsWindow.visible);
     this.updateEffectsWindow();
   }
@@ -427,6 +435,78 @@ export class GameScene extends Phaser.Scene {
     } else {
       this.debuffsText.setText('Нет активных дебаффов.');
     }
+  }
+
+  private togglePause(): void {
+    if (this.gameOver) return;
+
+    this.paused = !this.paused;
+    this.pauseOverlay.setVisible(this.paused);
+    if (this.paused) this.tweens.pauseAll();
+    else this.tweens.resumeAll();
+  }
+
+  private createPauseOverlay(): void {
+    const { width, height } = this.scale;
+
+    const dim = this.add.rectangle(0, 0, width, height, 0x1e293b, 0.78).setOrigin(0, 0).setInteractive();
+    const title = this.add
+      .text(width / 2, height / 2 - 80, 'ПАУЗА', { fontFamily: FONT, fontSize: '56px', color: '#ffffff', fontStyle: 'bold' })
+      .setOrigin(0.5);
+    const hint = this.add
+      .text(width / 2, height / 2 - 20, 'Нажмите P или Esc, чтобы продолжить', { fontFamily: FONT, fontSize: '18px', color: '#e2e8f0' })
+      .setOrigin(0.5);
+    const button = this.add
+      .rectangle(width / 2, height / 2 + 50, 240, 56, 0x2f86c6)
+      .setStrokeStyle(3, 0xffffff)
+      .setInteractive({ useHandCursor: true });
+    const label = this.add
+      .text(width / 2, height / 2 + 50, 'Продолжить', { fontFamily: FONT, fontSize: '22px', color: '#ffffff', fontStyle: 'bold' })
+      .setOrigin(0.5);
+
+    button.on('pointerdown', () => this.togglePause());
+    button.on('pointerover', () => button.setFillStyle(0x4aa3df));
+    button.on('pointerout', () => button.setFillStyle(0x2f86c6));
+
+    this.pauseOverlay = this.add
+      .container(0, 0, [dim, title, hint, button, label])
+      .setDepth(90)
+      .setVisible(false);
+  }
+
+  private createRestartButton(): void {
+    const { width } = this.scale;
+
+    const button = this.add
+      .rectangle(width - 16, 12, 140, 34, 0xdc2626)
+      .setOrigin(1, 0)
+      .setStrokeStyle(2, 0xfecaca)
+      .setInteractive({ useHandCursor: true });
+    const label = this.add
+      .text(width - 86, 29, 'Начать заново', { fontFamily: FONT, fontSize: '15px', color: '#ffffff', fontStyle: 'bold' })
+      .setOrigin(0.5);
+    this.add.text(width - 16, 52, 'P / Esc — пауза', { fontFamily: FONT, fontSize: '12px', color: '#e2e8f0' }).setOrigin(1, 0);
+
+    let armed = false;
+    const disarm = () => {
+      armed = false;
+      label.setText('Начать заново');
+      button.setFillStyle(0xdc2626);
+    };
+
+    button.on('pointerover', () => button.setFillStyle(armed ? 0xd97706 : 0xef4444));
+    button.on('pointerout', () => button.setFillStyle(armed ? 0xd97706 : 0xdc2626));
+    button.on('pointerdown', () => {
+      if (!armed) {
+        armed = true;
+        label.setText('Точно заново?');
+        button.setFillStyle(0xd97706);
+        this.time.delayedCall(3000, disarm);
+        return;
+      }
+      this.clearSave();
+      this.scene.restart();
+    });
   }
 
   private endGame(): void {
@@ -494,7 +574,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private click(x: number, y: number): void {
-    if (this.gameOver) return;
+    if (this.gameOver || this.paused) return;
 
     const gain = this.perClick;
     this.power += gain;
