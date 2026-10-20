@@ -1,3 +1,5 @@
+import { GAME_CONFIG } from './gameConfig';
+
 export type UpgradeKind = 'click' | 'passive';
 
 export interface UpgradeDef {
@@ -8,8 +10,6 @@ export interface UpgradeDef {
   value: number;
   baseCost: number;
 }
-
-export const COST_GROWTH = 1.2;
 
 export const UPGRADES: UpgradeDef[] = [
   { id: 'pen', name: 'Купить золотую ручку', description: '+1 за клик', kind: 'click', value: 1, baseCost: 15 },
@@ -24,7 +24,7 @@ export const UPGRADES: UpgradeDef[] = [
 ];
 
 export function upgradeCost(def: UpgradeDef, owned: number): number {
-  return Math.ceil(def.baseCost * Math.pow(COST_GROWTH, owned));
+  return Math.ceil(def.baseCost * Math.pow(GAME_CONFIG.costGrowth, owned));
 }
 
 export function formatNumber(n: number): string {

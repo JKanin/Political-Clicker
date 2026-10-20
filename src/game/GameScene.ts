@@ -1,31 +1,11 @@
 import Phaser from 'phaser';
 import { UPGRADES, UpgradeDef, UpgradeKind, formatNumber, upgradeCost } from './upgrades';
+import { GAME_CONFIG } from './gameConfig';
 
-const SAVE_KEY = 'state-clicker-save-v1';
 const FONT = 'system-ui, sans-serif';
-const FIRST_WARNING_AT = 90_000;
-const WARNING_LEAD = 30_000;
-const RALLY_INTERVAL_MIN = 60_000;
-const RALLY_INTERVAL_MAX = 90_000;
-const RALLY_DRAIN_FLAT = 50;
-const RALLY_DRAIN_GROWTH = 1.35;
-const RALLY_DRAIN_INCOME_SHARE = 0.5;
-const RALLY_DRAIN_POWER_SHARE = 0.003;
-const DISPERSE_COST_FLAT = 200;
-const DISPERSE_COST_GROWTH = 1.5;
-const DISPERSE_COST_INCOME_SECONDS = 25;
 
-const BUFF_FIRST_AT = 30_000;
-const BUFF_LIFETIME = 10_000;
-const BUFF_INTERVAL_MIN = 45_000;
-const BUFF_INTERVAL_MAX = 90_000;
-const BUFF_REWARD = 100;
-
-const PHASE2_POWER = 100;
-const SANCTIONS_INCOME_PENALTY = 0.25;
-const SANCTIONS_PRICE_MARKUP = 0.25;
-const SANCTIONS_INCOME_PCT = Math.round(SANCTIONS_INCOME_PENALTY * 100);
-const SANCTIONS_PRICE_PCT = Math.round(SANCTIONS_PRICE_MARKUP * 100);
+const SANCTIONS_INCOME_PCT = Math.round(GAME_CONFIG.sanctionsIncomePenalty * 100);
+const SANCTIONS_PRICE_PCT = Math.round(GAME_CONFIG.sanctionsPriceMarkup * 100);
 
 interface UpgradeRow {
   def: UpgradeDef;
@@ -45,11 +25,11 @@ export class GameScene extends Phaser.Scene {
   private wave = 0;
   private rallyActive = false;
   private rallyAt: number | null = null;
-  private nextWarningAt = FIRST_WARNING_AT;
+  private nextWarningAt = GAME_CONFIG.firstWarningAt;
 
   private buffAvailable = false;
   private buffEndsAt = 0;
-  private nextBuffAt = BUFF_FIRST_AT;
+  private nextBuffAt = GAME_CONFIG.buffFirstAt;
 
   private sanctions = false;
 
@@ -85,9 +65,9 @@ export class GameScene extends Phaser.Scene {
     this.wave = 0;
     this.rallyActive = false;
     this.rallyAt = null;
-    this.nextWarningAt = FIRST_WARNING_AT;
+    this.nextWarningAt = GAME_CONFIG.firstWarningAt;
     this.buffAvailable = false;
-    this.nextBuffAt = BUFF_FIRST_AT;
+    this.nextBuffAt = GAME_CONFIG.buffFirstAt;
     this.sanctions = false;
     this.loadProgress();
 
@@ -130,7 +110,7 @@ export class GameScene extends Phaser.Scene {
     this.input.keyboard?.on('keydown-E', () => this.toggleEffects());
     this.input.keyboard?.on('keydown-P', () => this.togglePause());
     this.input.keyboard?.on('keydown-ESC', () => this.togglePause());
-    this.time.addEvent({ delay: 5000, loop: true, callback: () => this.saveProgress() });
+    this.time.addEvent({ delay: GAME_CONFIG.autosaveInterval, loop: true, callback: () => this.saveProgress() });
     this.refresh();
   }
 
@@ -158,23 +138,23 @@ export class GameScene extends Phaser.Scene {
 
   private get perSecond(): number {
     const base = UPGRADES.reduce((sum, u) => (u.kind === 'passive' ? sum + u.value * this.count(u.id) : sum), 0);
-    return this.sanctions ? base * (1 - SANCTIONS_INCOME_PENALTY) : base;
+    return this.sanctions ? base * (1 - GAME_CONFIG.sanctionsIncomePenalty) : base;
   }
 
   private get drain(): number {
     if (!this.rallyActive) return 0;
-    const flat = RALLY_DRAIN_FLAT * Math.pow(RALLY_DRAIN_GROWTH, this.wave - 1);
-    return Math.round(flat + RALLY_DRAIN_INCOME_SHARE * this.perSecond + RALLY_DRAIN_POWER_SHARE * this.power);
+    const flat = GAME_CONFIG.rallyDrainFlat * Math.pow(GAME_CONFIG.rallyDrainGrowth, this.wave - 1);
+    return Math.round(flat + GAME_CONFIG.rallyDrainIncomeShare * this.perSecond + GAME_CONFIG.rallyDrainPowerShare * this.power);
   }
 
   private get disperseCost(): number {
-    const flat = DISPERSE_COST_FLAT * Math.pow(DISPERSE_COST_GROWTH, Math.max(0, this.wave - 1));
-    return Math.ceil(flat + DISPERSE_COST_INCOME_SECONDS * this.perSecond);
+    const flat = GAME_CONFIG.disperseCostFlat * Math.pow(GAME_CONFIG.disperseCostGrowth, Math.max(0, this.wave - 1));
+    return Math.ceil(flat + GAME_CONFIG.disperseCostIncomeSeconds * this.perSecond);
   }
 
   private costOf(def: UpgradeDef): number {
     const base = upgradeCost(def, this.count(def.id));
-    return Math.ceil(this.sanctions ? base * (1 + SANCTIONS_PRICE_MARKUP) : base);
+    return Math.ceil(this.sanctions ? base * (1 + GAME_CONFIG.sanctionsPriceMarkup) : base);
   }
 
   private count(id: string): number {
@@ -194,17 +174,17 @@ export class GameScene extends Phaser.Scene {
   }
 
   private updateEvent(): void {
-    if (!this.sanctions && this.power >= PHASE2_POWER) {
+    if (!this.sanctions && this.power >= GAME_CONFIG.phase2Score) {
       this.sanctions = true;
       this.cameras.main.shake(300, 0.005);
       this.showToast(
-        `⚠ Против вас ввели САНКЦИИ\nДоход −${SANCTIONS_INCOME_PCT}%, цены улучшений +${SANCTIONS_PRICE_PCT}%`,
+        `⚠ ВТОРАЯ ФАЗА: САНКЦИИ\nДоход −${SANCTIONS_INCOME_PCT}%, цены улучшений +${SANCTIONS_PRICE_PCT}%`,
         0xea580c,
       );
     }
 
     if (this.rallyAt === null && this.elapsed >= this.nextWarningAt) {
-      this.rallyAt = this.nextWarningAt + WARNING_LEAD;
+      this.rallyAt = this.nextWarningAt + GAME_CONFIG.warningLead;
       this.cameras.main.flash(300, 255, 160, 0);
       this.showToast('⚠ СОБЫТИЕ\nЧерез 30 секунд оппозиция проведёт митинг!', 0xd97706);
     }
@@ -216,8 +196,8 @@ export class GameScene extends Phaser.Scene {
       this.wave += 1;
       this.rallyActive = true;
       this.rallyAt = null;
-      const interval = Phaser.Math.Between(RALLY_INTERVAL_MIN, RALLY_INTERVAL_MAX);
-      this.nextWarningAt = startedAt + interval - WARNING_LEAD;
+      const interval = Phaser.Math.Between(GAME_CONFIG.rallyIntervalMin, GAME_CONFIG.rallyIntervalMax);
+      this.nextWarningAt = startedAt + interval - GAME_CONFIG.warningLead;
 
       this.cameras.main.shake(300, 0.006);
       this.showToast(wasActive
@@ -323,13 +303,13 @@ export class GameScene extends Phaser.Scene {
   }
 
   private scheduleNextBuff(): void {
-    this.nextBuffAt = this.elapsed + Phaser.Math.Between(BUFF_INTERVAL_MIN, BUFF_INTERVAL_MAX);
+    this.nextBuffAt = this.elapsed + Phaser.Math.Between(GAME_CONFIG.buffIntervalMin, GAME_CONFIG.buffIntervalMax);
   }
 
   private updateBuff(): void {
     if (!this.buffAvailable && this.elapsed >= this.nextBuffAt) {
       this.buffAvailable = true;
-      this.buffEndsAt = this.elapsed + BUFF_LIFETIME;
+      this.buffEndsAt = this.elapsed + GAME_CONFIG.buffLifetime;
       this.buffButton.setVisible(true).setScale(0.6);
       this.tweens.add({ targets: this.buffButton, scale: 1, duration: 250, ease: 'Back.Out' });
     } else if (this.buffAvailable && this.elapsed >= this.buffEndsAt) {
@@ -342,13 +322,13 @@ export class GameScene extends Phaser.Scene {
   private collectBuff(): void {
     if (!this.buffAvailable || this.gameOver || this.paused) return;
 
-    this.power += BUFF_REWARD;
+    this.power += GAME_CONFIG.buffReward;
     this.buffAvailable = false;
     this.buffButton.setVisible(false);
     this.scheduleNextBuff();
 
     const floating = this.add
-      .text(190, 515, `+${BUFF_REWARD}`, {
+      .text(190, 515, `+${GAME_CONFIG.buffReward}`, {
         fontFamily: FONT,
         fontSize: '28px',
         color: '#86efac',
@@ -375,8 +355,8 @@ export class GameScene extends Phaser.Scene {
   private updateBuffUi(): void {
     if (!this.buffAvailable) return;
     const left = Math.max(0, this.buffEndsAt - this.elapsed);
-    this.buffLabel.setText(`Посадить видного\nоппозиционера\n+${BUFF_REWARD} власти • ${Math.ceil(left / 1000)} с`);
-    this.buffBar.setScale(left / BUFF_LIFETIME, 1);
+    this.buffLabel.setText(`Посадить видного\nоппозиционера\n+${GAME_CONFIG.buffReward} власти • ${Math.ceil(left / 1000)} с`);
+    this.buffBar.setScale(left / GAME_CONFIG.buffLifetime, 1);
   }
 
   private createEffectsWindow(): void {
@@ -452,7 +432,7 @@ export class GameScene extends Phaser.Scene {
     if (this.buffAvailable) {
       const left = Math.ceil(Math.max(0, this.buffEndsAt - this.elapsed) / 1000);
       this.buffsText.setText(
-        `• Посадить видного оппозиционера\n   Нажмите кнопку слева: +${BUFF_REWARD} Гос.власти (осталось ${left} с)`,
+        `• Посадить видного оппозиционера\n   Нажмите кнопку слева: +${GAME_CONFIG.buffReward} Гос.власти (осталось ${left} с)`,
       );
     } else {
       this.buffsText.setText('Нет активных баффов.');
@@ -702,14 +682,14 @@ export class GameScene extends Phaser.Scene {
   private saveProgress(): void {
     if (this.gameOver) return;
     try {
-      localStorage.setItem(SAVE_KEY, JSON.stringify({ power: this.power, owned: this.owned }));
+      localStorage.setItem(GAME_CONFIG.saveKey, JSON.stringify({ power: this.power, owned: this.owned }));
     } catch {
     }
   }
 
   private clearSave(): void {
     try {
-      localStorage.removeItem(SAVE_KEY);
+      localStorage.removeItem(GAME_CONFIG.saveKey);
     } catch {
       /* ignore */
     }
@@ -719,7 +699,7 @@ export class GameScene extends Phaser.Scene {
     this.power = 0;
     this.owned = {};
     try {
-      const raw = localStorage.getItem(SAVE_KEY);
+      const raw = localStorage.getItem(GAME_CONFIG.saveKey);
       if (!raw) return;
       const data = JSON.parse(raw) as { power?: number; owned?: Record<string, number> };
       this.power = data.power ?? 0;
