@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@fontsource/pt-serif": "^5.3.0",
     "phaser": "4.2.1"
   },
   "devDependencies": {
