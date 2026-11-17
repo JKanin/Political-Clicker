@@ -22,6 +22,8 @@ export const GAME_CONFIG = {
   buffIntervalMin: 45000,
   buffIntervalMax: 90000,
   buffReward: 100,
+  buffRewardClicks: 20,
+  buffRewardIncomeSeconds: 15,
   inputSwitchLock: 600,
   muteKey: 'state-clicker-muted-v1',
   clickSparks: 5,

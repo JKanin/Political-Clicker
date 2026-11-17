@@ -42,6 +42,7 @@ interface UpgradeRow {
   x: number;
   hover: boolean;
   denyUntil: number;
+  revealed: boolean;
 }
 
 interface UpgradeColumn {
@@ -113,6 +114,7 @@ export class GameScene extends Phaser.Scene {
   private buffsText!: Phaser.GameObjects.Text;
   private debuffsText!: Phaser.GameObjects.Text;
   private columns: UpgradeColumn[] = [];
+  private revealAnimations = false;
 
   constructor() {
     super('GameScene');
@@ -120,6 +122,7 @@ export class GameScene extends Phaser.Scene {
 
   create(): void {
     this.columns = [];
+    this.revealAnimations = false;
     this.elapsed = 0;
     this.gameOver = false;
     this.paused = false;
@@ -147,6 +150,7 @@ export class GameScene extends Phaser.Scene {
     this.createDocument(LEFT_CX, DOC_Y);
     this.createHint();
     this.createUpgradePanel();
+    this.revealAnimations = true;
     this.createEventCards();
     this.createEffectsWindow();
     this.createRestartButton();
@@ -203,6 +207,13 @@ export class GameScene extends Phaser.Scene {
     return this.sanctions ? base * (1 - GAME_CONFIG.sanctionsIncomePenalty) : base;
   }
 
+  /** Награда за посадку оппозиционера: растёт вместе с доходом, но не меньше базовой. */
+  private get buffRewardNow(): number {
+    const scaled =
+      this.perClick * GAME_CONFIG.buffRewardClicks + this.perSecond * GAME_CONFIG.buffRewardIncomeSeconds;
+    return Math.round(Math.max(GAME_CONFIG.buffReward, scaled));
+  }
+
   private get totalOwned(): number {
     return Object.values(this.owned).reduce((sum, n) => sum + n, 0);
   }
@@ -241,6 +252,7 @@ export class GameScene extends Phaser.Scene {
     }
     this.power -= cost;
     this.owned[def.id] = this.count(def.id) + 1;
+    for (const column of this.columns) this.layoutColumn(column);
     this.sfx.buy();
     if (row) this.celebrateRow(row, cost);
     this.saveProgress();
@@ -484,14 +496,15 @@ export class GameScene extends Phaser.Scene {
   private collectBuff(): void {
     if (!this.buffAvailable || this.gameOver || this.paused) return;
 
-    this.power += GAME_CONFIG.buffReward;
+    const reward = this.buffRewardNow;
+    this.power += reward;
     this.sfx.buffCollect();
     this.buffAvailable = false;
     this.buffCard.setVisible(false);
     this.scheduleNextBuff();
 
     const floating = this.add
-      .text(LEFT_CX, BUFF_Y, `+${GAME_CONFIG.buffReward}`, {
+      .text(LEFT_CX, BUFF_Y, `+${formatNumber(reward)}`, {
         fontFamily: FONT,
         fontSize: '30px',
         color: TEXT.ok,
@@ -518,7 +531,7 @@ export class GameScene extends Phaser.Scene {
   private updateBuffUi(): void {
     if (!this.buffAvailable) return;
     const left = Math.max(0, this.buffEndsAt - this.elapsed);
-    this.buffSub.setText(`+${GAME_CONFIG.buffReward} Гос.власти • ${Math.ceil(left / 1000)} с`);
+    this.buffSub.setText(`+${formatNumber(this.buffRewardNow)} Гос.власти • ${Math.ceil(left / 1000)} с`);
     this.buffBar.setScale(left / GAME_CONFIG.buffLifetime, 1);
   }
 
@@ -611,7 +624,7 @@ export class GameScene extends Phaser.Scene {
     if (this.buffAvailable) {
       const left = Math.ceil(Math.max(0, this.buffEndsAt - this.elapsed) / 1000);
       this.buffsText.setText(
-        `• Посадить видного оппозиционера\n   Нажмите кнопку слева: +${GAME_CONFIG.buffReward} Гос.власти (осталось ${left} с)`,
+        `• Посадить видного оппозиционера\n   Нажмите кнопку слева: +${formatNumber(this.buffRewardNow)} Гос.власти (осталось ${left} с)`,
       );
     } else {
       this.buffsText.setText('Нет активных баффов.');
@@ -1317,6 +1330,7 @@ export class GameScene extends Phaser.Scene {
       x,
       hover: false,
       denyUntil: 0,
+      revealed: false,
     };
 
     bg.setInteractive({ useHandCursor: true });
@@ -1326,21 +1340,38 @@ export class GameScene extends Phaser.Scene {
     return row;
   }
 
+  /** Сколько улучшений в колонке открыто: первое всегда, каждое следующее — после покупки предыдущего. */
+  private unlockedCount(column: UpgradeColumn): number {
+    let lastOwned = -1;
+    column.rows.forEach((row, i) => {
+      if (this.count(row.def.id) > 0) lastOwned = i;
+    });
+    return Math.min(column.rows.length, lastOwned + 2);
+  }
+
   private scrollColumn(column: UpgradeColumn, direction: number): void {
     column.offset += direction;
     this.layoutColumn(column);
   }
 
   private layoutColumn(column: UpgradeColumn): void {
-    const total = column.rows.length;
+    const total = this.unlockedCount(column);
     const maxOffset = Math.max(0, total - VISIBLE_ROWS);
     column.offset = Phaser.Math.Clamp(column.offset, 0, maxOffset);
 
     column.rows.forEach((row, i) => {
       const slot = i - column.offset;
-      const visible = slot >= 0 && slot < VISIBLE_ROWS;
+      const unlocked = i < total;
+      const visible = unlocked && slot >= 0 && slot < VISIBLE_ROWS;
       row.container.setVisible(visible);
       if (visible) row.container.setPosition(column.x, LIST_TOP + slot * ROW_PITCH);
+      if (unlocked && !row.revealed) {
+        row.revealed = true;
+        if (this.revealAnimations && visible) {
+          row.container.setAlpha(0);
+          this.tweens.add({ targets: row.container, alpha: 1, duration: 400, ease: 'Sine.Out' });
+        }
+      }
     });
 
     const scrollable = maxOffset > 0;
