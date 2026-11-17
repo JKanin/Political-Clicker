@@ -25,3 +25,31 @@ export const UPGRADE_ICONS: Record<string, string> = {
   union: '🌐',
   newera: '🌅',
 };
+
+/** Названия этажей власти (без глаголов «купить», «создать» и т.п.). Ключ — id из upgrades.ts. */
+export const FLOOR_NAMES: Record<string, string> = {
+  pen: 'Золотые ручки',
+  secretary: 'Секретари',
+  stamp: 'Новые печати',
+  ministry: 'Свои министры',
+  edo: 'Электронный документооборот',
+  emergency: 'Чрезвычайные полномочия',
+  administration: 'Свои люди в администрации',
+  corporation: 'Госкорпорации',
+  media: 'Подконтрольные СМИ',
+  manual: 'Ручное управление',
+  committee: 'Комитеты по контролю',
+  referendum: 'Референдумы',
+  party: 'Партии власти',
+  immunity: 'Законы о неприкосновенности',
+  security: 'Силовые ведомства',
+  cult: 'Культ личности',
+  banks: 'Подконтрольные банки',
+  guarantor: 'Гарант конституции',
+  oil: 'Нефтегаз',
+  marshal: 'Звание маршала',
+  vertical: 'Вертикаль власти',
+  lifelong: 'Пожизненные полномочия',
+  union: 'Наднациональные союзы',
+  newera: 'Новые эры',
+};

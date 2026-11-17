@@ -3,25 +3,86 @@ import { UPGRADES, UpgradeDef, UpgradeKind, formatNumber, upgradeCost } from './
 import { GAME_CONFIG } from './gameConfig';
 import { Sfx } from './audio';
 import { BRANCH, COLORS, FONT, FONT_HEAD, TEXT, TIER_COLORS, TIER_TEXT, tierOf } from './theme';
-import { UPGRADE_ICONS } from './icons';
+import { FLOOR_NAMES, UPGRADE_ICONS } from './icons';
 
 const SANCTIONS_INCOME_PCT = Math.round(GAME_CONFIG.sanctionsIncomePenalty * 100);
 const SANCTIONS_PRICE_PCT = Math.round(GAME_CONFIG.sanctionsPriceMarkup * 100);
 
-const LEFT_X = 16;
-const LEFT_W = 288;
-const LEFT_CX = LEFT_X + LEFT_W / 2;
-const COLUMN_TOP = 135;
-const LIST_TOP = COLUMN_TOP + 32;
-const ROW_W = 290;
 const ROW_H = 70;
 const ROW_GAP = 6;
 const ROW_PITCH = ROW_H + ROW_GAP;
-const VISIBLE_ROWS = 6;
-const LIST_H = VISIBLE_ROWS * ROW_PITCH - ROW_GAP;
-const RALLY_Y = 428;
-const BUFF_Y = 542;
-const DOC_Y = 300;
+const FLOOR_PAD = 20;
+
+// Раскладка зависит от ориентации экрана: широкая (ПК) или вертикальная (телефон).
+let PORTRAIT = false;
+let LEFT_X = 331;
+let LEFT_W = 288;
+let LEFT_CX = 475;
+let DOC_CX = 475;
+let DOC_Y = 300;
+let HINT_X = 475;
+let HINT_Y = 142;
+let HEADER_H = 112;
+let STAT_Y = 72;
+let COLUMN_TOP = 135;
+let LIST_TOP = 167;
+let ROW_W = 290;
+let VISIBLE_ROWS = 6;
+let LIST_H = VISIBLE_ROWS * ROW_PITCH - ROW_GAP;
+let COLUMN_X: [number, number] = [650, 955];
+let FLOORS_X = 14;
+let FLOORS_W = 290;
+let FLOOR_ICON_PX = 22;
+let RALLY_Y = 428;
+let BUFF_Y = 542;
+let TOAST_Y = 290;
+
+function applyLayout(width: number, height: number): void {
+  PORTRAIT = width < height;
+  if (PORTRAIT) {
+    HEADER_H = 124;
+    STAT_Y = 86;
+    LEFT_X = 240;
+    LEFT_W = 224;
+    DOC_CX = 121;
+    DOC_Y = 276;
+    HINT_X = 352;
+    HINT_Y = 200;
+    RALLY_Y = 136;
+    BUFF_Y = 256;
+    TOAST_Y = 345;
+    COLUMN_TOP = 402;
+    LIST_TOP = COLUMN_TOP + 40;
+    ROW_W = 440;
+    COLUMN_X = [16, 16];
+    FLOORS_X = 16;
+    FLOORS_W = 440;
+    FLOOR_ICON_PX = 30;
+    VISIBLE_ROWS = Math.max(3, Math.floor((height - LIST_TOP - 12 + ROW_GAP) / ROW_PITCH));
+  } else {
+    HEADER_H = 112;
+    STAT_Y = 72;
+    LEFT_X = 331;
+    LEFT_W = 288;
+    DOC_CX = 475;
+    DOC_Y = 300;
+    HINT_X = 475;
+    HINT_Y = 142;
+    RALLY_Y = 428;
+    BUFF_Y = 542;
+    TOAST_Y = 290;
+    COLUMN_TOP = 135;
+    LIST_TOP = COLUMN_TOP + 32;
+    ROW_W = 290;
+    COLUMN_X = [650, 955];
+    FLOORS_X = 14;
+    FLOORS_W = 290;
+    FLOOR_ICON_PX = 22;
+    VISIBLE_ROWS = 6;
+  }
+  LEFT_CX = LEFT_X + LEFT_W / 2;
+  LIST_H = VISIBLE_ROWS * ROW_PITCH - ROW_GAP;
+}
 
 type ClickSource = 'mouse' | 'space';
 
@@ -43,6 +104,13 @@ interface UpgradeRow {
   hover: boolean;
   denyUntil: number;
   revealed: boolean;
+}
+
+interface FloorRow {
+  def: UpgradeDef;
+  container: Phaser.GameObjects.Container;
+  sprites: Phaser.GameObjects.Text[];
+  count: Phaser.GameObjects.Text;
 }
 
 interface UpgradeColumn {
@@ -115,14 +183,26 @@ export class GameScene extends Phaser.Scene {
   private debuffsText!: Phaser.GameObjects.Text;
   private columns: UpgradeColumn[] = [];
   private revealAnimations = false;
+  private floors: FloorRow[] = [];
+  private floorOffset = 0;
+  private floorUpBtn!: Phaser.GameObjects.Text;
+  private floorDownBtn!: Phaser.GameObjects.Text;
+  private floorEmpty!: Phaser.GameObjects.Text;
+  private activeTab = 0;
+  private tabButtons: { bg: Phaser.GameObjects.Rectangle; label: Phaser.GameObjects.Text }[] = [];
+  private dragMoved = false;
 
   constructor() {
     super('GameScene');
   }
 
   create(): void {
+    applyLayout(this.scale.width, this.scale.height);
+    this.sharpenText();
     this.columns = [];
     this.revealAnimations = false;
+    this.floors = [];
+    this.floorOffset = 0;
     this.elapsed = 0;
     this.gameOver = false;
     this.paused = false;
@@ -147,9 +227,11 @@ export class GameScene extends Phaser.Scene {
 
     this.createBackdrop();
     this.createHeader();
-    this.createDocument(LEFT_CX, DOC_Y);
+    this.createDocument(DOC_CX, DOC_Y);
     this.createHint();
     this.createUpgradePanel();
+    this.createFloors();
+    this.createTabs();
     this.revealAnimations = true;
     this.createEventCards();
     this.createEffectsWindow();
@@ -158,7 +240,7 @@ export class GameScene extends Phaser.Scene {
 
     this.input.keyboard?.on('keydown-SPACE', (event: KeyboardEvent) => {
       if (event.repeat) return;
-      this.click(LEFT_CX, 280, 'space');
+      this.click(DOC_CX, DOC_Y - 20, 'space');
     });
     this.input.keyboard?.on('keydown-E', () => this.toggleEffects());
     this.input.keyboard?.on('keydown-M', () => this.toggleMute());
@@ -166,18 +248,98 @@ export class GameScene extends Phaser.Scene {
     this.input.keyboard?.on('keydown-ESC', () => this.togglePause());
     this.input.on('wheel', (pointer: Phaser.Input.Pointer, _objects: unknown, _dx: number, dy: number) => {
       if (this.gameOver || this.paused || this.effectsWindow.visible) return;
-      const column = this.columns.find(
-        (c) =>
-          pointer.x >= c.x - 4 &&
-          pointer.x <= c.x + ROW_W + 14 &&
-          pointer.y >= COLUMN_TOP &&
-          pointer.y <= LIST_TOP + LIST_H,
-      );
-      if (column) this.scrollColumn(column, dy > 0 ? 1 : -1);
+      this.scrollListAt(pointer.x, pointer.y, dy > 0 ? 1 : -1);
     });
+
+    // Свайп по списку (телефон): палец вверх — следующие улучшения.
+    let dragFrom: number | null = null;
+    this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+      this.dragMoved = false;
+      dragFrom = pointer.y >= LIST_TOP && pointer.y <= LIST_TOP + LIST_H ? pointer.y : null;
+    });
+    this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
+      if (!pointer.isDown || dragFrom === null) return;
+      if (this.gameOver || this.paused || this.effectsWindow.visible) return;
+      const dy = pointer.y - dragFrom;
+      if (Math.abs(dy) > 10) this.dragMoved = true;
+      if (Math.abs(dy) >= ROW_PITCH) {
+        this.scrollListAt(pointer.x, pointer.y, dy < 0 ? 1 : -1);
+        dragFrom = pointer.y;
+      }
+    });
+
+    // Поворот экрана: сохраняем прогресс и перестраиваем интерфейс (см. config.ts).
+    this.game.events.off('relayout', this.relayout, this);
+    this.game.events.on('relayout', this.relayout, this);
+    this.events.once('shutdown', () => this.game.events.off('relayout', this.relayout, this));
 
     this.time.addEvent({ delay: GAME_CONFIG.autosaveInterval, loop: true, callback: () => this.saveProgress() });
     this.refresh();
+  }
+
+  private relayout(): void {
+    this.saveProgress();
+    this.scene.restart();
+  }
+
+  /** На экранах с высокой плотностью пикселей рисуем текст чётче (иначе он расплывается). */
+  private sharpenText(): void {
+    const factory = this.add;
+    Reflect.deleteProperty(factory, 'text'); // убираем обёртку от прошлого запуска сцены
+    const scale = (this.scale.displaySize.width / this.scale.width) * (window.devicePixelRatio || 1);
+    const resolution = Math.min(3, Math.max(1, scale));
+    if (resolution < 1.1) return;
+    const original = Phaser.GameObjects.GameObjectFactory.prototype.text.bind(factory);
+    factory.text = ((...args: Parameters<typeof original>) => original(...args).setResolution(resolution)) as typeof original;
+  }
+
+  /** Вкладка видна всегда (широкий экран) или только активная (вертикальный экран). */
+  private tabVisible(index: number): boolean {
+    return !PORTRAIT || this.activeTab === index;
+  }
+
+  /** Прокручивает список под указателем (колонку улучшений или этажи). */
+  private scrollListAt(x: number, y: number, direction: number): void {
+    if (y < COLUMN_TOP || y > LIST_TOP + LIST_H) return;
+    if (this.tabVisible(2) && x >= FLOORS_X - 4 && x <= FLOORS_X + FLOORS_W + 4) {
+      this.scrollFloors(direction);
+      return;
+    }
+    const column = this.columns.find((c, i) => this.tabVisible(i) && x >= c.x - 4 && x <= c.x + ROW_W + 14);
+    if (column) this.scrollColumn(column, direction);
+  }
+
+  private createTabs(): void {
+    this.tabButtons = [];
+    if (!PORTRAIT) return;
+    const labels = ['ИНСТРУМЕНТЫ', 'ВЕРТИКАЛЬ', 'ЭТАЖИ'];
+    const gap = 6;
+    const w = Math.floor((ROW_W - gap * 2) / 3);
+    labels.forEach((text, i) => {
+      const x = COLUMN_X[0] + i * (w + gap);
+      const bg = this.add
+        .rectangle(x, COLUMN_TOP, w, 34, COLORS.row)
+        .setOrigin(0, 0)
+        .setStrokeStyle(2, COLORS.rowEdge)
+        .setInteractive({ useHandCursor: true });
+      const label = this.add
+        .text(x + w / 2, COLUMN_TOP + 17, text, { fontFamily: FONT_HEAD, fontSize: '13px', color: TEXT.cream, fontStyle: 'bold' })
+        .setOrigin(0.5);
+      bg.on('pointerdown', () => this.selectTab(i));
+      this.tabButtons.push({ bg, label });
+    });
+    this.selectTab(this.activeTab);
+  }
+
+  private selectTab(index: number): void {
+    this.activeTab = index;
+    this.tabButtons.forEach((tab, i) => {
+      const on = i === index;
+      tab.bg.setFillStyle(on ? COLORS.rowHover : COLORS.row).setStrokeStyle(on ? 3 : 2, on ? COLORS.gold : COLORS.rowEdge);
+      tab.label.setColor(on ? TEXT.gold : TEXT.cream);
+    });
+    for (const column of this.columns) this.layoutColumn(column);
+    this.layoutFloors();
   }
 
   update(_time: number, delta: number): void {
@@ -253,6 +415,7 @@ export class GameScene extends Phaser.Scene {
     this.power -= cost;
     this.owned[def.id] = this.count(def.id) + 1;
     for (const column of this.columns) this.layoutColumn(column);
+    this.onFloorPurchased(def);
     this.sfx.buy();
     if (row) this.celebrateRow(row, cost);
     this.saveProgress();
@@ -340,11 +503,11 @@ export class GameScene extends Phaser.Scene {
       .setOrigin(0, 0)
       .setStrokeStyle(3, COLORS.white);
     this.rallyTitle = this.add
-      .text(12, 18, '', { fontFamily: FONT_HEAD, fontSize: '17px', color: TEXT.white, fontStyle: 'bold' })
+      .text(12, 18, '', { fontFamily: FONT_HEAD, fontSize: PORTRAIT ? '13px' : '17px', color: TEXT.white, fontStyle: 'bold' })
       .setOrigin(0, 0.5);
     this.rallyInfo = this.add.text(12, 31, '', {
       fontFamily: FONT,
-      fontSize: '14px',
+      fontSize: PORTRAIT ? '12px' : '14px',
       color: TEXT.white,
       lineSpacing: 2,
     });
@@ -388,14 +551,21 @@ export class GameScene extends Phaser.Scene {
     const buffTitle = this.add
       .text(LEFT_W / 2, 28, 'ПОСАДИТЬ ВИДНОГО\nОППОЗИЦИОНЕРА', {
         fontFamily: FONT,
-        fontSize: '17px',
+        fontSize: PORTRAIT ? '15px' : '17px',
         color: TEXT.white,
         fontStyle: 'bold',
         align: 'center',
       })
       .setOrigin(0.5);
     this.buffSub = this.add
-      .text(LEFT_W / 2, 61, '', { fontFamily: FONT, fontSize: '14px', color: '#fef9c3', fontStyle: 'bold' })
+      .text(LEFT_W / 2, 61, '', {
+        fontFamily: FONT,
+        fontSize: PORTRAIT ? '12px' : '14px',
+        color: '#fef9c3',
+        fontStyle: 'bold',
+        align: 'center',
+        wordWrap: { width: LEFT_W - 16 },
+      })
       .setOrigin(0.5);
     this.buffBar = this.add.rectangle(0, 79, LEFT_W, 6, COLORS.gold).setOrigin(0, 0.5);
 
@@ -418,6 +588,7 @@ export class GameScene extends Phaser.Scene {
 
     const warning = this.rallyAt !== null;
     const show = this.rallyActive || warning;
+    if (PORTRAIT) this.hintText.setVisible(!show);
     this.rallyCard.setVisible(show);
     if (!show) return;
 
@@ -458,11 +629,19 @@ export class GameScene extends Phaser.Scene {
 
   private showToast(message: string, color: number): void {
     const { width } = this.scale;
-    const bg = this.add.rectangle(0, 0, 560, 90, color, 0.95).setStrokeStyle(3, COLORS.white);
+    const toastW = Math.min(560, width - 24);
+    const bg = this.add.rectangle(0, 0, toastW, 90, color, 0.95).setStrokeStyle(3, COLORS.white);
     const text = this.add
-      .text(0, 0, message, { fontFamily: FONT, fontSize: '20px', color: TEXT.white, fontStyle: 'bold', align: 'center' })
+      .text(0, 0, message, {
+        fontFamily: FONT,
+        fontSize: PORTRAIT ? '17px' : '20px',
+        color: TEXT.white,
+        fontStyle: 'bold',
+        align: 'center',
+        wordWrap: { width: toastW - 24 },
+      })
       .setOrigin(0.5);
-    const toast = this.add.container(width / 2, 290, [bg, text]).setDepth(20).setAlpha(0);
+    const toast = this.add.container(width / 2, TOAST_Y, [bg, text]).setDepth(20).setAlpha(0);
     this.tweens.add({
       targets: toast,
       alpha: 1,
@@ -536,7 +715,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private createEffectsWindow(): void {
-    const { height } = this.scale;
+    const { width, height } = this.scale;
     const button = this.add
       .rectangle(16, 12, 130, 34, COLORS.row)
       .setOrigin(0, 0)
@@ -550,7 +729,7 @@ export class GameScene extends Phaser.Scene {
     button.on('pointerout', () => button.setFillStyle(COLORS.row));
 
     const bg = this.add
-      .rectangle(0, 0, 480, 480, COLORS.window, 0.98)
+      .rectangle(0, 0, Math.min(480, width - 16), 480, COLORS.window, 0.98)
       .setStrokeStyle(3, COLORS.windowEdge)
       .setInteractive();
     const title = this.add
@@ -575,7 +754,7 @@ export class GameScene extends Phaser.Scene {
     this.debuffsText = body(121);
 
     this.effectsWindow = this.add
-      .container(545, height / 2, [
+      .container(width / 2, height / 2, [
         bg,
         title,
         close,
@@ -691,10 +870,17 @@ export class GameScene extends Phaser.Scene {
     const label = this.add
       .text(width - 86, 29, 'Начать заново', { fontFamily: FONT, fontSize: '15px', color: TEXT.white, fontStyle: 'bold' })
       .setOrigin(0.5);
-    this.add.text(width - 16, 52, 'P / Esc — пауза', { fontFamily: FONT, fontSize: '12px', color: TEXT.muted }).setOrigin(1, 0);
+    if (!PORTRAIT) {
+      this.add.text(width - 16, 52, 'P / Esc — пауза', { fontFamily: FONT, fontSize: '12px', color: TEXT.muted }).setOrigin(1, 0);
+    }
     this.muteLabel = this.add
-      .text(width - 16, 68, '', { fontFamily: FONT, fontSize: '12px', color: TEXT.muted })
-      .setOrigin(1, 0)
+      .text(PORTRAIT ? width / 2 : width - 16, PORTRAIT ? 25 : 68, '', {
+        fontFamily: FONT,
+        fontSize: PORTRAIT ? '14px' : '12px',
+        color: TEXT.muted,
+        padding: PORTRAIT ? { x: 10, y: 8 } : undefined,
+      })
+      .setOrigin(PORTRAIT ? 0.5 : 1, PORTRAIT ? 0.5 : 0)
       .setInteractive({ useHandCursor: true });
     this.muteLabel.on('pointerdown', () => this.toggleMute());
     this.updateMuteLabel();
@@ -758,6 +944,8 @@ export class GameScene extends Phaser.Scene {
         fontFamily: FONT,
         fontSize: '16px',
         color: TEXT.muted,
+        align: 'center',
+        wordWrap: { width: width - 40 },
       })
       .setOrigin(0.5)
       .setDepth(101);
@@ -854,25 +1042,36 @@ export class GameScene extends Phaser.Scene {
 
   private createBackdrop(): void {
     const { width, height } = this.scale;
+    if (this.textures.exists('desk-bg')) {
+      const source = this.textures.get('desk-bg').getSourceImage();
+      if (source.width !== width || source.height !== height) {
+        this.textures.remove('desk-bg');
+        this.textures.remove('rally-vignette');
+      }
+    }
     this.ensureTextures(width, height);
 
     this.add.image(0, 0, 'desk-bg').setOrigin(0, 0);
     this.rallyTint = this.add.rectangle(0, 0, width, height, 0x3b0a0a, 0).setOrigin(0, 0).setDepth(3);
     this.rallyVignette = this.add.image(0, 0, 'rally-vignette').setOrigin(0, 0).setAlpha(0).setDepth(4);
 
-    this.add.rectangle(0, 0, width, 112, COLORS.header, 0.94).setOrigin(0, 0);
+    this.add.rectangle(0, 0, width, HEADER_H, COLORS.header, 0.94).setOrigin(0, 0);
     this.add.rectangle(0, 0, width, 2, 0x6b4630).setOrigin(0, 0);
-    this.add.rectangle(0, 115, width, 8, 0x000000, 0.3).setOrigin(0, 0);
-    this.add.rectangle(0, 112, width, 3, COLORS.brass).setOrigin(0, 0);
+    this.add.rectangle(0, HEADER_H + 3, width, 8, 0x000000, 0.3).setOrigin(0, 0);
+    this.add.rectangle(0, HEADER_H, width, 3, COLORS.brass).setOrigin(0, 0);
 
-    const panel = (x: number, w: number): void => {
-      this.add.rectangle(x + 5, 130, w, 510, 0x000000, 0.45).setOrigin(0, 0);
-      this.add.tileSprite(x, 122, w, 510, 'felt').setOrigin(0, 0);
-      this.add.rectangle(x, 122, w, 510).setOrigin(0, 0).setStrokeStyle(3, COLORS.panelEdge);
-      this.add.rectangle(x + 7, 129, w - 14, 496).setOrigin(0, 0).setStrokeStyle(1, COLORS.stitch, 0.5);
+    const panel = (x: number, y: number, w: number, h: number): void => {
+      this.add.rectangle(x + 5, y + 8, w, h, 0x000000, 0.45).setOrigin(0, 0);
+      this.add.tileSprite(x, y, w, h, 'felt').setOrigin(0, 0);
+      this.add.rectangle(x, y, w, h).setOrigin(0, 0).setStrokeStyle(3, COLORS.panelEdge);
+      this.add.rectangle(x + 7, y + 7, w - 14, h - 14).setOrigin(0, 0).setStrokeStyle(1, COLORS.stitch, 0.5);
     };
-    panel(6, 306);
-    panel(318, 634);
+    if (PORTRAIT) {
+      panel(6, COLUMN_TOP - 8, width - 12, height - COLUMN_TOP + 2);
+    } else {
+      panel(6, 122, 306, 510);
+      panel(638, 122, 634, 510);
+    }
   }
 
   private toggleMute(): void {
@@ -881,7 +1080,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private updateMuteLabel(): void {
-    this.muteLabel.setText(`M — звук: ${this.sfx.muted ? 'выкл' : 'вкл'}`);
+    this.muteLabel.setText(`${PORTRAIT ? 'Звук' : 'M — звук'}: ${this.sfx.muted ? 'выкл' : 'вкл'}`);
   }
 
   private floatText(x: number, y: number, message: string, color: string, size = 18, rise = 40): void {
@@ -937,20 +1136,23 @@ export class GameScene extends Phaser.Scene {
     const { width } = this.scale;
     const cx = width / 2;
 
-    const title = this.add
-      .text(cx, 6, 'КАБИНЕТ ГЛАВЫ ГОСУДАРСТВА', { fontFamily: FONT_HEAD, fontSize: '18px', color: TEXT.cream, fontStyle: 'bold' })
-      .setOrigin(0.5, 0);
-    const half = title.width / 2 + 14;
-    for (const side of [-1, 1]) {
-      this.add.rectangle(cx + side * half, 17, 70, 1, COLORS.brass, 0.7).setOrigin(side === 1 ? 0 : 1, 0.5);
-      this.add.rectangle(cx + side * (half + 76), 17, 5, 5, COLORS.brass).setAngle(45);
+    if (!PORTRAIT) {
+      const title = this.add
+        .text(cx, 6, 'КАБИНЕТ ГЛАВЫ ГОСУДАРСТВА', { fontFamily: FONT_HEAD, fontSize: '18px', color: TEXT.cream, fontStyle: 'bold' })
+        .setOrigin(0.5, 0);
+      const half = title.width / 2 + 14;
+      for (const side of [-1, 1]) {
+        this.add.rectangle(cx + side * half, 17, 70, 1, COLORS.brass, 0.7).setOrigin(side === 1 ? 0 : 1, 0.5);
+        this.add.rectangle(cx + side * (half + 76), 17, 5, 5, COLORS.brass).setAngle(45);
+      }
     }
 
-    this.powerIcon = this.createCoin(cx - 120, 50);
+    const powerY = PORTRAIT ? 66 : 50;
+    this.powerIcon = this.createCoin(cx - 120, powerY);
     this.powerText = this.add
-      .text(cx, 50, '', {
+      .text(cx, powerY, '', {
         fontFamily: FONT_HEAD,
-        fontSize: '32px',
+        fontSize: PORTRAIT ? '28px' : '32px',
         color: TEXT.gold,
         fontStyle: 'bold',
         stroke: '#2b1608',
@@ -958,15 +1160,16 @@ export class GameScene extends Phaser.Scene {
       })
       .setOrigin(0.5);
 
-    this.add.rectangle(cx, 74, 1, 28, COLORS.brass, 0.6).setOrigin(0.5, 0);
+    this.add.rectangle(cx, STAT_Y + 2, 1, 28, COLORS.brass, 0.6).setOrigin(0.5, 0);
     this.clickStat = this.createStat(cx - 110, 'ЗА КЛИК');
     this.secStat = this.createStat(cx + 110, 'В СЕКУНДУ');
 
-    this.sanctionsText = this.add.text(16, 58, '', {
+    this.sanctionsText = this.add.text(16, PORTRAIT ? 130 : 58, '', {
       fontFamily: FONT,
       fontSize: '12px',
       color: TEXT.danger,
       fontStyle: 'bold',
+      wordWrap: PORTRAIT ? { width: LEFT_X - 24 } : undefined,
     });
   }
 
@@ -978,9 +1181,9 @@ export class GameScene extends Phaser.Scene {
   }
 
   private createStat(x: number, label: string): Phaser.GameObjects.Text {
-    this.add.text(x, 72, label, { fontFamily: FONT, fontSize: '10px', color: '#c9b48a' }).setOrigin(0.5, 0);
+    this.add.text(x, STAT_Y, label, { fontFamily: FONT, fontSize: '10px', color: '#c9b48a' }).setOrigin(0.5, 0);
     return this.add
-      .text(x, 83, '', { fontFamily: FONT_HEAD, fontSize: '18px', color: TEXT.white, fontStyle: 'bold' })
+      .text(x, STAT_Y + 11, '', { fontFamily: FONT_HEAD, fontSize: '18px', color: TEXT.white, fontStyle: 'bold' })
       .setOrigin(0.5, 0);
   }
 
@@ -1014,7 +1217,7 @@ export class GameScene extends Phaser.Scene {
     this.paperGroup.setScale(0.975).setY(DOC_Y + 3);
     this.tweens.add({ targets: this.paperGroup, scale: 1, y: DOC_Y, duration: 150, ease: 'Back.Out' });
 
-    const ring = this.add.circle(LEFT_CX + 52, DOC_Y + 68, 26).setStrokeStyle(3, 0xfca5a5, 0.9).setDepth(9);
+    const ring = this.add.circle(DOC_CX + 52, DOC_Y + 68, 26).setStrokeStyle(3, 0xfca5a5, 0.9).setDepth(9);
     this.tweens.add({
       targets: ring,
       scale: 1.9,
@@ -1143,12 +1346,12 @@ export class GameScene extends Phaser.Scene {
 
   private createHint(): void {
     this.hintText = this.add
-      .text(LEFT_CX, 142, '', { fontFamily: FONT, fontSize: '20px', color: TEXT.gold, fontStyle: 'bold', align: 'center' })
+      .text(HINT_X, HINT_Y, '', { fontFamily: FONT, fontSize: '20px', color: TEXT.gold, fontStyle: 'bold', align: 'center' })
       .setOrigin(0.5);
     this.hintArrow = this.add
-      .text(LEFT_CX, 170, '▼', { fontFamily: FONT, fontSize: '26px', color: TEXT.gold })
+      .text(HINT_X, HINT_Y + 28, '▼', { fontFamily: FONT, fontSize: '26px', color: TEXT.gold })
       .setOrigin(0.5);
-    this.tweens.add({ targets: this.hintArrow, y: 177, duration: 380, yoyo: true, repeat: -1 });
+    this.tweens.add({ targets: this.hintArrow, y: HINT_Y + 35, duration: 380, yoyo: true, repeat: -1 });
   }
 
   private updateHint(): void {
@@ -1158,13 +1361,16 @@ export class GameScene extends Phaser.Scene {
     this.hintStage = stage;
 
     this.paperGlow.setVisible(stage === 0);
-    this.hintArrow.setVisible(stage === 0);
+    this.hintArrow.setVisible(stage === 0 && !PORTRAIT);
     if (stage === 0) {
-      this.hintText.setText('КЛИКАЙ ПО УКАЗУ!\nили жми ПРОБЕЛ').setFontSize(18).setColor(TEXT.gold);
+      const text = PORTRAIT ? 'КЛИКАЙ\nПО УКАЗУ!' : 'КЛИКАЙ ПО УКАЗУ!\nили жми ПРОБЕЛ';
+      this.hintText.setText(text).setFontSize(18).setColor(TEXT.gold);
     } else if (stage === 1) {
-      this.hintText.setText('Копи Гос.власть и покупай\nулучшения справа →').setFontSize(16).setColor(TEXT.gold);
+      const text = PORTRAIT ? 'Копи Гос.власть и\nпокупай улучшения ↓' : 'Копи Гос.власть и покупай\nулучшения справа →';
+      this.hintText.setText(text).setFontSize(16).setColor(TEXT.gold);
     } else {
-      this.hintText.setText('КЛИКАЙ ПО УКАЗУ\nили ЖМИ ПРОБЕЛ').setFontSize(14).setColor(TEXT.muted);
+      const text = PORTRAIT ? 'КЛИКАЙ\nПО УКАЗУ' : 'КЛИКАЙ ПО УКАЗУ\nили ЖМИ ПРОБЕЛ';
+      this.hintText.setText(text).setFontSize(14).setColor(TEXT.muted);
     }
   }
 
@@ -1213,18 +1419,20 @@ export class GameScene extends Phaser.Scene {
 
   private createUpgradePanel(): void {
     const defs: { kind: UpgradeKind; title: string; x: number }[] = [
-      { kind: 'click', title: 'ЛИЧНЫЕ ИНСТРУМЕНТЫ', x: 330 },
-      { kind: 'passive', title: 'ВЫСТРАИВАНИЕ ВЕРТИКАЛИ', x: 635 },
+      { kind: 'click', title: 'ЛИЧНЫЕ ИНСТРУМЕНТЫ', x: COLUMN_X[0] },
+      { kind: 'passive', title: 'ВЫСТРАИВАНИЕ ВЕРТИКАЛИ', x: COLUMN_X[1] },
     ];
 
     for (const def of defs) {
-      this.add.text(def.x, COLUMN_TOP + 1, def.title, {
-        fontFamily: FONT_HEAD,
-        fontSize: '15px',
-        color: TEXT.cream,
-        fontStyle: 'bold',
-      });
-      this.add.rectangle(def.x, COLUMN_TOP + 25, ROW_W - 56, 2, BRANCH[def.kind].edge, 0.9).setOrigin(0, 0);
+      if (!PORTRAIT) {
+        this.add.text(def.x, COLUMN_TOP + 1, def.title, {
+          fontFamily: FONT_HEAD,
+          fontSize: '15px',
+          color: TEXT.cream,
+          fontStyle: 'bold',
+        });
+        this.add.rectangle(def.x, COLUMN_TOP + 25, ROW_W - 56, 2, BRANCH[def.kind].edge, 0.9).setOrigin(0, 0);
+      }
 
       const track = this.add.rectangle(def.x + ROW_W + 5, LIST_TOP, 5, LIST_H, COLORS.rowEdge, 0.5).setOrigin(0, 0);
       const thumb = this.add.rectangle(def.x + ROW_W + 5, LIST_TOP, 5, 40, 0xf1f5f9).setOrigin(0, 0);
@@ -1240,6 +1448,126 @@ export class GameScene extends Phaser.Scene {
       }
       this.columns.push(column);
       this.layoutColumn(column);
+    }
+  }
+
+  private createFloors(): void {
+    if (!PORTRAIT) {
+      this.add.text(FLOORS_X, COLUMN_TOP + 1, 'ЭТАЖИ ВЛАСТИ', {
+        fontFamily: FONT_HEAD,
+        fontSize: '15px',
+        color: TEXT.cream,
+        fontStyle: 'bold',
+      });
+      this.add.rectangle(FLOORS_X, COLUMN_TOP + 25, FLOORS_W - 56, 2, COLORS.rowEdge, 0.9).setOrigin(0, 0);
+    }
+
+    this.floorUpBtn = this.createArrow(FLOORS_X + FLOORS_W - 44, '▲');
+    this.floorDownBtn = this.createArrow(FLOORS_X + FLOORS_W - 18, '▼');
+    this.floorUpBtn.on('pointerdown', () => this.scrollFloors(-1));
+    this.floorDownBtn.on('pointerdown', () => this.scrollFloors(1));
+
+    this.floorEmpty = this.add
+      .text(FLOORS_X + FLOORS_W / 2, LIST_TOP + LIST_H / 2, 'Покупайте улучшения —\nздесь появятся этажи\nвашей власти', {
+        fontFamily: FONT,
+        fontSize: '15px',
+        color: TEXT.muted,
+        align: 'center',
+        lineSpacing: 6,
+      })
+      .setOrigin(0.5)
+      .setAlpha(0.7);
+
+    // Уже купленные улучшения (из сохранения) — в порядке покупки, без анимации.
+    for (const id of Object.keys(this.owned)) {
+      const def = UPGRADES.find((u) => u.id === id);
+      if (!def || this.count(id) <= 0) continue;
+      this.syncFloor(this.addFloor(def), false);
+    }
+    this.floorOffset = Number.MAX_SAFE_INTEGER;
+    this.layoutFloors();
+  }
+
+  private addFloor(def: UpgradeDef): FloorRow {
+    const branch = BRANCH[def.kind];
+    const bg = this.add.rectangle(0, 0, FLOORS_W, ROW_H, branch.fill).setOrigin(0, 0).setStrokeStyle(2, branch.edge);
+    const ground = this.add.rectangle(0, ROW_H - 10, FLOORS_W, 10, branch.medal).setOrigin(0, 0);
+    const groundLine = this.add.rectangle(0, ROW_H - 10, FLOORS_W, 2, branch.edge).setOrigin(0, 0);
+    const label = this.add
+      .text(8, 4, FLOOR_NAMES[def.id] ?? def.name, { fontFamily: FONT, fontSize: '11px', color: TEXT.muted })
+      .setAlpha(0.8);
+    const count = this.add
+      .text(FLOORS_W - 8, 3, '', { fontFamily: FONT_HEAD, fontSize: '13px', color: TEXT.muted, fontStyle: 'bold' })
+      .setOrigin(1, 0);
+    const container = this.add.container(FLOORS_X, 0, [bg, ground, groundLine, label, count]).setVisible(false);
+    const floor: FloorRow = { def, container, sprites: [], count };
+    this.floors.push(floor);
+    return floor;
+  }
+
+  /** Дорисовывает на этаже фигурки до числа купленных (но не больше floorMaxSprites). */
+  private syncFloor(floor: FloorRow, animate: boolean): void {
+    const owned = this.count(floor.def.id);
+    const shown = Math.min(owned, GAME_CONFIG.floorMaxSprites);
+    const step = (FLOORS_W - 2 * FLOOR_PAD) / Math.max(1, GAME_CONFIG.floorMaxSprites - 1);
+    while (floor.sprites.length < shown) {
+      const i = floor.sprites.length;
+      const sprite = this.add
+        .text(FLOOR_PAD + i * step, ROW_H - 8, UPGRADE_ICONS[floor.def.id] ?? '★', { fontFamily: FONT, fontSize: `${FLOOR_ICON_PX}px` })
+        .setOrigin(0.5, 1);
+      floor.container.add(sprite);
+      floor.sprites.push(sprite);
+      if (animate) {
+        sprite.setScale(0);
+        this.tweens.add({ targets: sprite, scale: 1, duration: 350, ease: 'Back.Out' });
+      }
+    }
+    floor.count.setText(`×${owned}`);
+    this.setTextColor(floor.count, TIER_TEXT[tierOf(owned)]);
+  }
+
+  private onFloorPurchased(def: UpgradeDef): void {
+    let floor = this.floors.find((f) => f.def.id === def.id);
+    const isNew = !floor;
+    if (!floor) floor = this.addFloor(def);
+    this.syncFloor(floor, true);
+    if (isNew) {
+      this.floorOffset = Number.MAX_SAFE_INTEGER;
+      this.layoutFloors();
+      floor.container.setAlpha(0);
+      this.tweens.add({ targets: floor.container, alpha: 1, duration: 400 });
+    }
+  }
+
+  private scrollFloors(direction: number): void {
+    this.floorOffset += direction;
+    this.layoutFloors();
+  }
+
+  private layoutFloors(): void {
+    const total = this.floors.length;
+    const maxOffset = Math.max(0, total - VISIBLE_ROWS);
+    this.floorOffset = Phaser.Math.Clamp(this.floorOffset, 0, maxOffset);
+
+    const shown = this.tabVisible(2);
+    this.floors.forEach((floor, i) => {
+      const slot = i - this.floorOffset;
+      const visible = shown && slot >= 0 && slot < VISIBLE_ROWS;
+      floor.container.setVisible(visible);
+      if (visible) floor.container.setPosition(FLOORS_X, LIST_TOP + slot * ROW_PITCH);
+    });
+
+    const arrows = maxOffset > 0 && shown && !PORTRAIT;
+    this.floorUpBtn.setVisible(arrows).setAlpha(this.floorOffset > 0 ? 1 : 0.35);
+    this.floorDownBtn.setVisible(arrows).setAlpha(this.floorOffset < maxOffset ? 1 : 0.35);
+    this.floorEmpty.setVisible(total === 0 && shown);
+  }
+
+  /** Лёгкое покачивание фигурок на видимых этажах. */
+  private animateFloors(now: number): void {
+    for (const floor of this.floors) {
+      if (!floor.container.visible) continue;
+      floor.sprites.forEach((sprite, i) => sprite.setY(ROW_H - 8 - 1.5 * (1 + Math.sin(now / 350 + i * 0.8))));
     }
   }
 
@@ -1334,7 +1662,15 @@ export class GameScene extends Phaser.Scene {
     };
 
     bg.setInteractive({ useHandCursor: true });
-    bg.on('pointerdown', () => this.buy(def));
+    if (PORTRAIT) {
+      // На телефоне покупка по отпусканию пальца, чтобы свайп не покупал улучшение.
+      bg.on('pointerup', () => {
+        row.hover = false;
+        if (!this.dragMoved) this.buy(def);
+      });
+    } else {
+      bg.on('pointerdown', () => this.buy(def));
+    }
     bg.on('pointerover', () => (row.hover = true));
     bg.on('pointerout', () => (row.hover = false));
     return row;
@@ -1359,10 +1695,11 @@ export class GameScene extends Phaser.Scene {
     const maxOffset = Math.max(0, total - VISIBLE_ROWS);
     column.offset = Phaser.Math.Clamp(column.offset, 0, maxOffset);
 
+    const shown = this.tabVisible(this.columns.indexOf(column));
     column.rows.forEach((row, i) => {
       const slot = i - column.offset;
       const unlocked = i < total;
-      const visible = unlocked && slot >= 0 && slot < VISIBLE_ROWS;
+      const visible = shown && unlocked && slot >= 0 && slot < VISIBLE_ROWS;
       row.container.setVisible(visible);
       if (visible) row.container.setPosition(column.x, LIST_TOP + slot * ROW_PITCH);
       if (unlocked && !row.revealed) {
@@ -1374,9 +1711,9 @@ export class GameScene extends Phaser.Scene {
       }
     });
 
-    const scrollable = maxOffset > 0;
-    column.upBtn.setVisible(scrollable).setAlpha(column.offset > 0 ? 1 : 0.35);
-    column.downBtn.setVisible(scrollable).setAlpha(column.offset < maxOffset ? 1 : 0.35);
+    const scrollable = maxOffset > 0 && shown;
+    column.upBtn.setVisible(scrollable && !PORTRAIT).setAlpha(column.offset > 0 ? 1 : 0.35);
+    column.downBtn.setVisible(scrollable && !PORTRAIT).setAlpha(column.offset < maxOffset ? 1 : 0.35);
     column.track.setVisible(scrollable);
     column.thumb.setVisible(scrollable);
     if (scrollable) {
@@ -1431,6 +1768,7 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
+    this.animateFloors(now);
     this.updateHint();
     this.updateSanctionsText();
     this.updateEventCards();

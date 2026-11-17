@@ -30,7 +30,7 @@ body {
 }
 
 #game {
-  width: min(100%, 960px);
+  width: min(100%, 1280px);
   height: min(100%, 640px);
   min-height: 320px;
   border-radius: 12px;
@@ -40,4 +40,43 @@ body {
 
 canvas {
   display: block;
+}
+
+#game canvas {
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Телефон в вертикальном положении: игра на весь экран без рамок. */
+@media (orientation: portrait) {
+  html,
+  body,
+  #app {
+    height: 100dvh;
+  }
+
+  #app {
+    padding: 0;
+  }
+
+  #game {
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+}
+
+/* Телефон в горизонтальном положении: убираем отступы, чтобы поле было крупнее. */
+@media (orientation: landscape) and (max-height: 520px) {
+  #app {
+    padding: 0;
+  }
+
+  #game {
+    width: min(100%, 1280px);
+    height: 100%;
+    border-radius: 0;
+  }
 }

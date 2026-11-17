@@ -24,6 +24,7 @@ export const GAME_CONFIG = {
   buffReward: 100,
   buffRewardClicks: 20,
   buffRewardIncomeSeconds: 15,
+  floorMaxSprites: 10,
   inputSwitchLock: 600,
   muteKey: 'state-clicker-muted-v1',
   clickSparks: 5,
