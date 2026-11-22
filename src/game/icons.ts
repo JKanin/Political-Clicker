@@ -1,4 +1,3 @@
-/** Иконки улучшений (эмодзи). Ключ — id из upgrades.ts. */
 export const UPGRADE_ICONS: Record<string, string> = {
   pen: '🖋️',
   secretary: '📞',
@@ -26,7 +25,6 @@ export const UPGRADE_ICONS: Record<string, string> = {
   newera: '🌅',
 };
 
-/** Названия этажей власти (без глаголов «купить», «создать» и т.п.). Ключ — id из upgrades.ts. */
 export const FLOOR_NAMES: Record<string, string> = {
   pen: 'Золотые ручки',
   secretary: 'Секретари',

@@ -4,6 +4,20 @@ import { GAME_CONFIG } from './gameConfig';
 import { Sfx } from './audio';
 import { BRANCH, COLORS, FONT, FONT_HEAD, TEXT, TIER_COLORS, TIER_TEXT, tierOf } from './theme';
 import { FLOOR_NAMES, UPGRADE_ICONS } from './icons';
+import { JailGame } from './jailGame';
+import { NewspaperEvent } from './NewspaperEvent';
+import {
+  ActiveMod,
+  EVENTS,
+  EventChoice,
+  EventDef,
+  EventEffect,
+  EventLine,
+  MOD_STATS,
+  ModStat,
+  describeMod,
+  modIsGood,
+} from './events';
 
 const SANCTIONS_INCOME_PCT = Math.round(GAME_CONFIG.sanctionsIncomePenalty * 100);
 const SANCTIONS_PRICE_PCT = Math.round(GAME_CONFIG.sanctionsPriceMarkup * 100);
@@ -13,7 +27,6 @@ const ROW_GAP = 6;
 const ROW_PITCH = ROW_H + ROW_GAP;
 const FLOOR_PAD = 20;
 
-// Раскладка зависит от ориентации экрана: широкая (ПК) или вертикальная (телефон).
 let PORTRAIT = false;
 let LEFT_X = 331;
 let LEFT_W = 288;
@@ -36,6 +49,9 @@ let FLOOR_ICON_PX = 22;
 let RALLY_Y = 428;
 let BUFF_Y = 542;
 let TOAST_Y = 290;
+let SANC_X = 370;
+let SANC_Y = 164;
+let SANC_W = 210;
 
 function applyLayout(width: number, height: number): void {
   PORTRAIT = width < height;
@@ -51,6 +67,9 @@ function applyLayout(width: number, height: number): void {
     RALLY_Y = 136;
     BUFF_Y = 256;
     TOAST_Y = 345;
+    SANC_X = 240;
+    SANC_Y = 350;
+    SANC_W = 224;
     COLUMN_TOP = 402;
     LIST_TOP = COLUMN_TOP + 40;
     ROW_W = 440;
@@ -71,6 +90,9 @@ function applyLayout(width: number, height: number): void {
     RALLY_Y = 428;
     BUFF_Y = 542;
     TOAST_Y = 290;
+    SANC_X = 370;
+    SANC_Y = 164;
+    SANC_W = 210;
     COLUMN_TOP = 135;
     LIST_TOP = COLUMN_TOP + 32;
     ROW_W = 290;
@@ -147,6 +169,16 @@ export class GameScene extends Phaser.Scene {
   private nextBuffAt = GAME_CONFIG.buffFirstAt;
 
   private sanctions = false;
+  private sanctionsWave = 0;
+  private sanctionsProgress = 0;
+  private sanctionsNextAt = 0;
+
+  private jail: JailGame | null = null;
+
+  private newspaper: NewspaperEvent | null = null;
+  private seenEvents: string[] = [];
+  private mods: ActiveMod[] = [];
+  private nextEventAt = GAME_CONFIG.eventFirstAt;
 
   private sfx!: Sfx;
   private disperseDenyUntil = 0;
@@ -166,6 +198,9 @@ export class GameScene extends Phaser.Scene {
   private rallyVignette!: Phaser.GameObjects.Image;
   private rallyLevel = 0;
   private sanctionsText!: Phaser.GameObjects.Text;
+  private bypassBar!: Phaser.GameObjects.Container;
+  private bypassFill!: Phaser.GameObjects.Rectangle;
+  private bypassText!: Phaser.GameObjects.Text;
   private rallyCard!: Phaser.GameObjects.Container;
   private rallyGlow!: Phaser.GameObjects.Rectangle;
   private rallyBg!: Phaser.GameObjects.Rectangle;
@@ -181,6 +216,7 @@ export class GameScene extends Phaser.Scene {
   private upgradesText!: Phaser.GameObjects.Text;
   private buffsText!: Phaser.GameObjects.Text;
   private debuffsText!: Phaser.GameObjects.Text;
+  private debuffsTitle!: Phaser.GameObjects.Text;
   private columns: UpgradeColumn[] = [];
   private revealAnimations = false;
   private floors: FloorRow[] = [];
@@ -219,6 +255,12 @@ export class GameScene extends Phaser.Scene {
     this.buffAvailable = false;
     this.nextBuffAt = GAME_CONFIG.buffFirstAt;
     this.sanctions = false;
+    this.sanctionsWave = 0;
+    this.sanctionsProgress = 0;
+    this.sanctionsNextAt = 0;
+    this.jail = null;
+    this.newspaper = null;
+    this.nextEventAt = GAME_CONFIG.eventFirstAt;
     this.disperseDenyUntil = 0;
     this.loadProgress();
     this.displayPower = this.power;
@@ -229,6 +271,7 @@ export class GameScene extends Phaser.Scene {
     this.createHeader();
     this.createDocument(DOC_CX, DOC_Y);
     this.createHint();
+    this.createSanctionsBar();
     this.createUpgradePanel();
     this.createFloors();
     this.createTabs();
@@ -247,11 +290,10 @@ export class GameScene extends Phaser.Scene {
     this.input.keyboard?.on('keydown-P', () => this.togglePause());
     this.input.keyboard?.on('keydown-ESC', () => this.togglePause());
     this.input.on('wheel', (pointer: Phaser.Input.Pointer, _objects: unknown, _dx: number, dy: number) => {
-      if (this.gameOver || this.paused || this.effectsWindow.visible) return;
+      if (this.gameOver || this.paused || this.jail || this.newspaper || this.effectsWindow.visible) return;
       this.scrollListAt(pointer.x, pointer.y, dy > 0 ? 1 : -1);
     });
 
-    // Свайп по списку (телефон): палец вверх — следующие улучшения.
     let dragFrom: number | null = null;
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
       this.dragMoved = false;
@@ -259,7 +301,7 @@ export class GameScene extends Phaser.Scene {
     });
     this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
       if (!pointer.isDown || dragFrom === null) return;
-      if (this.gameOver || this.paused || this.effectsWindow.visible) return;
+      if (this.gameOver || this.paused || this.jail || this.newspaper || this.effectsWindow.visible) return;
       const dy = pointer.y - dragFrom;
       if (Math.abs(dy) > 10) this.dragMoved = true;
       if (Math.abs(dy) >= ROW_PITCH) {
@@ -268,7 +310,6 @@ export class GameScene extends Phaser.Scene {
       }
     });
 
-    // Поворот экрана: сохраняем прогресс и перестраиваем интерфейс (см. config.ts).
     this.game.events.off('relayout', this.relayout, this);
     this.game.events.on('relayout', this.relayout, this);
     this.events.once('shutdown', () => this.game.events.off('relayout', this.relayout, this));
@@ -282,10 +323,9 @@ export class GameScene extends Phaser.Scene {
     this.scene.restart();
   }
 
-  /** На экранах с высокой плотностью пикселей рисуем текст чётче (иначе он расплывается). */
   private sharpenText(): void {
     const factory = this.add;
-    Reflect.deleteProperty(factory, 'text'); // убираем обёртку от прошлого запуска сцены
+    Reflect.deleteProperty(factory, 'text');
     const scale = (this.scale.displaySize.width / this.scale.width) * (window.devicePixelRatio || 1);
     const resolution = Math.min(3, Math.max(1, scale));
     if (resolution < 1.1) return;
@@ -293,12 +333,10 @@ export class GameScene extends Phaser.Scene {
     factory.text = ((...args: Parameters<typeof original>) => original(...args).setResolution(resolution)) as typeof original;
   }
 
-  /** Вкладка видна всегда (широкий экран) или только активная (вертикальный экран). */
   private tabVisible(index: number): boolean {
     return !PORTRAIT || this.activeTab === index;
   }
 
-  /** Прокручивает список под указателем (колонку улучшений или этажи). */
   private scrollListAt(x: number, y: number, direction: number): void {
     if (y < COLUMN_TOP || y > LIST_TOP + LIST_H) return;
     if (this.tabVisible(2) && x >= FLOORS_X - 4 && x <= FLOORS_X + FLOORS_W + 4) {
@@ -345,9 +383,19 @@ export class GameScene extends Phaser.Scene {
   update(_time: number, delta: number): void {
     if (this.gameOver || this.paused) return;
 
+    if (this.jail) {
+      this.jail.update(delta);
+      return;
+    }
+
+    if (this.newspaper) return;
+
     this.elapsed += delta;
     this.updateEvent();
+    this.updateSanctions(delta);
     this.updateBuff();
+    this.updateNewspaperEvents();
+    if (this.newspaper) return;
 
     const net = this.perSecond - this.drain;
     this.power += (net * delta) / 1000;
@@ -361,19 +409,32 @@ export class GameScene extends Phaser.Scene {
   }
 
   private get perClick(): number {
-    return UPGRADES.reduce((sum, u) => (u.kind === 'click' ? sum + u.value * this.count(u.id) : sum), 1);
+    const base = UPGRADES.reduce((sum, u) => (u.kind === 'click' ? sum + u.value * this.count(u.id) : sum), 1);
+    return Math.max(1, Math.round(base * this.modFactor('click')));
   }
 
   private get perSecond(): number {
     const base = UPGRADES.reduce((sum, u) => (u.kind === 'passive' ? sum + u.value * this.count(u.id) : sum), 0);
-    return this.sanctions ? base * (1 - GAME_CONFIG.sanctionsIncomePenalty) : base;
+    const afterSanctions = this.sanctions ? base * (1 - GAME_CONFIG.sanctionsIncomePenalty) : base;
+    return afterSanctions * this.modFactor('income');
   }
 
-  /** Награда за посадку оппозиционера: растёт вместе с доходом, но не меньше базовой. */
   private get buffRewardNow(): number {
     const scaled =
       this.perClick * GAME_CONFIG.buffRewardClicks + this.perSecond * GAME_CONFIG.buffRewardIncomeSeconds;
     return Math.round(Math.max(GAME_CONFIG.buffReward, scaled));
+  }
+
+  private get passiveOwned(): number {
+    return UPGRADES.reduce((sum, u) => (u.kind === 'passive' ? sum + this.count(u.id) : sum), 0);
+  }
+
+  private get bypassTarget(): number {
+    return GAME_CONFIG.sanctionsBypassBase + GAME_CONFIG.sanctionsBypassStep * Math.max(0, this.sanctionsWave - 1);
+  }
+
+  private get jailRewardMax(): number {
+    return Math.round(this.buffRewardNow * Math.max(...GAME_CONFIG.jailRewardMultipliers));
   }
 
   private get totalOwned(): number {
@@ -386,7 +447,7 @@ export class GameScene extends Phaser.Scene {
     const base =
       flat + GAME_CONFIG.rallyDrainIncomeShare * this.perSecond + GAME_CONFIG.rallyDrainPowerShare * this.power;
     const seconds = Math.max(0, (this.elapsed - this.rallyActiveSince) / 1000);
-    return Math.round(base * (1 + GAME_CONFIG.rallyEscalationPerSecond * seconds));
+    return Math.round(base * (1 + GAME_CONFIG.rallyEscalationPerSecond * seconds) * this.modFactor('drain'));
   }
 
   private get disperseCost(): number {
@@ -396,7 +457,8 @@ export class GameScene extends Phaser.Scene {
 
   private costOf(def: UpgradeDef): number {
     const base = upgradeCost(def, this.count(def.id));
-    return Math.ceil(this.sanctions ? base * (1 + GAME_CONFIG.sanctionsPriceMarkup) : base);
+    const withSanctions = this.sanctions ? base * (1 + GAME_CONFIG.sanctionsPriceMarkup) : base;
+    return Math.ceil(withSanctions * this.modFactor('price'));
   }
 
   private count(id: string): number {
@@ -404,7 +466,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private buy(def: UpgradeDef): void {
-    if (this.gameOver || this.paused) return;
+    if (this.gameOver || this.paused || this.newspaper) return;
     const cost = this.costOf(def);
     const row = this.findRow(def);
     if (this.power < cost) {
@@ -421,18 +483,100 @@ export class GameScene extends Phaser.Scene {
     this.saveProgress();
   }
 
-  private updateEvent(): void {
-    if (!this.sanctions && this.power >= GAME_CONFIG.phase2Score) {
-      this.sanctions = true;
-      this.cameras.main.shake(300, 0.005);
-      this.sfx.sanctions();
-      this.flashBorder(COLORS.sanction);
-      this.showToast(
-        `⚠ ВТОРАЯ ФАЗА: САНКЦИИ\nДоход −${SANCTIONS_INCOME_PCT}%, цены улучшений +${SANCTIONS_PRICE_PCT}%`,
-        COLORS.sanction,
-      );
-    }
+  private modFactor(stat: ModStat): number {
+    return this.mods.reduce((factor, mod) => (mod.stat === stat ? factor * mod.multiplier : factor), 1);
+  }
 
+  private updateNewspaperEvents(): void {
+    this.expireMods();
+
+    if (this.elapsed < this.nextEventAt || this.rallyAt !== null) return;
+
+    const owned = this.totalOwned;
+    const ready = EVENTS.filter((e) => !this.seenEvents.includes(e.id) && owned >= e.minOwned);
+    if (ready.length === 0) {
+      this.nextEventAt = this.hasUnseenEvents() ? this.elapsed + GAME_CONFIG.eventRetryDelay : Infinity;
+      return;
+    }
+    this.showNewspaper(Phaser.Utils.Array.GetRandom(ready));
+  }
+
+  private hasUnseenEvents(): boolean {
+    return EVENTS.some((e) => !this.seenEvents.includes(e.id));
+  }
+
+  private showNewspaper(def: EventDef): void {
+    this.effectsWindow.setVisible(false);
+    this.nextEventAt = Infinity;
+    this.newspaper = new NewspaperEvent(this, this.sfx, def, {
+      preview: (choice) => this.eventLines(choice, def.short, false),
+      apply: (choice) => {
+
+        if (!this.seenEvents.includes(def.id)) this.seenEvents.push(def.id);
+        const lines = this.eventLines(choice, def.short, true);
+        this.saveProgress();
+        return lines;
+      },
+      close: () => this.closeNewspaper(),
+    });
+  }
+
+  private closeNewspaper(): void {
+    this.newspaper = null;
+    this.nextEventAt = this.hasUnseenEvents()
+      ? this.elapsed + Phaser.Math.Between(GAME_CONFIG.eventIntervalMin, GAME_CONFIG.eventIntervalMax)
+      : Infinity;
+    this.refresh();
+  }
+
+  private eventLines(choice: EventChoice, label: string, apply: boolean): EventLine[] {
+    return choice.effects.map((effect) => this.runEffect(effect, label, apply));
+  }
+
+  private runEffect(effect: EventEffect, label: string, apply: boolean): EventLine {
+    if (effect.type === 'gain') {
+      const reward = this.perClick * effect.clicks + this.perSecond * effect.seconds;
+      const amount = Math.round(Math.max(GAME_CONFIG.eventMinReward, reward));
+      if (apply) this.power += amount;
+      return { text: `+${formatNumber(amount)} Гос.власти`, good: true };
+    }
+    if (effect.type === 'loss') {
+      const amount = Math.floor(this.power * effect.share);
+      if (apply) this.power -= amount;
+      return { text: `−${Math.round(effect.share * 100)}% Гос.власти (−${formatNumber(amount)})`, good: false };
+    }
+    if (apply) {
+      this.mods.push({
+        stat: effect.stat,
+        multiplier: effect.multiplier,
+        endsAt: this.elapsed + effect.seconds * 1000,
+        label,
+      });
+    }
+    return {
+      text: `${describeMod(effect.stat, effect.multiplier)} на ${effect.seconds} с`,
+      good: modIsGood(effect.stat, effect.multiplier),
+    };
+  }
+
+  private expireMods(): void {
+    const expired = this.mods.filter((m) => m.endsAt <= this.elapsed);
+    if (expired.length === 0) return;
+    this.mods = this.mods.filter((m) => m.endsAt > this.elapsed);
+    const names = Array.from(new Set(expired.map((m) => m.label))).join(', ');
+    this.showToast(`⌛ Эффект закончился\n${names}`, COLORS.panelEdge);
+  }
+
+  private modLines(good: boolean): string[] {
+    return this.mods
+      .filter((m) => modIsGood(m.stat, m.multiplier) === good)
+      .map((m) => {
+        const left = Math.ceil(Math.max(0, m.endsAt - this.elapsed) / 1000);
+        return `• ${m.label}: ${describeMod(m.stat, m.multiplier)} (${left} с)`;
+      });
+  }
+
+  private updateEvent(): void {
     if (this.rallyAt === null && this.elapsed >= this.nextWarningAt) {
       this.rallyAt = this.nextWarningAt + GAME_CONFIG.warningLead;
       this.cameras.main.flash(300, 255, 160, 0);
@@ -467,8 +611,48 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  private updateSanctions(delta: number): void {
+    if (this.sanctions) {
+      const decay = (GAME_CONFIG.sanctionsBypassDecay * delta) / 1000;
+      this.sanctionsProgress = Math.max(0, this.sanctionsProgress - decay);
+      return;
+    }
+    const need = GAME_CONFIG.sanctionsStartPassive + GAME_CONFIG.sanctionsStartPassiveStep * this.sanctionsWave;
+    if (this.elapsed >= this.sanctionsNextAt && this.passiveOwned >= need) this.startSanctions();
+  }
+
+  private startSanctions(): void {
+    this.sanctions = true;
+    this.sanctionsWave += 1;
+    this.sanctionsProgress = 0;
+    this.hintStage = -1;
+    this.cameras.main.shake(300, 0.005);
+    this.sfx.sanctions();
+    this.flashBorder(COLORS.sanction);
+    const title = this.sanctionsWave > 1 ? `САНКЦИИ: ВОЛНА ${this.sanctionsWave}` : 'ВТОРАЯ ФАЗА: САНКЦИИ';
+    this.showToast(
+      `⚠ ${title}\nДоход −${SANCTIONS_INCOME_PCT}%, цены улучшений +${SANCTIONS_PRICE_PCT}%\nПодпиши ${this.bypassTarget} указов, чтобы обойти их!`,
+      COLORS.sanction,
+    );
+  }
+
+  private addBypass(): void {
+    this.sanctionsProgress += 1;
+    if (this.sanctionsProgress >= this.bypassTarget) this.liftSanctions();
+  }
+
+  private liftSanctions(): void {
+    this.sanctions = false;
+    this.sanctionsProgress = 0;
+    this.sanctionsNextAt = this.elapsed + GAME_CONFIG.sanctionsCooldown;
+    this.hintStage = -1;
+    this.sfx.success();
+    this.cameras.main.flash(250, 34, 197, 94);
+    this.showToast('✔ САНКЦИИ ОБОЙДЕНЫ\nДоход и цены вернулись в норму', COLORS.ok);
+  }
+
   private disperse(): void {
-    if (!this.rallyActive || this.gameOver || this.paused) return;
+    if (!this.rallyActive || this.gameOver || this.paused || this.newspaper) return;
 
     const cost = this.disperseCost;
     if (this.power < cost) {
@@ -494,6 +678,22 @@ export class GameScene extends Phaser.Scene {
       repeat: 2,
       onComplete: () => frame.destroy(),
     });
+  }
+
+  private createSanctionsBar(): void {
+    const track = this.add.rectangle(0, 0, SANC_W, 20, 0x000000, 0.6).setOrigin(0, 0).setStrokeStyle(2, COLORS.sanction);
+    this.bypassFill = this.add.rectangle(1, 1, SANC_W - 2, 18, COLORS.sanction).setOrigin(0, 0);
+    this.bypassText = this.add
+      .text(SANC_W / 2, 10, '', {
+        fontFamily: FONT,
+        fontSize: '12px',
+        color: TEXT.white,
+        fontStyle: 'bold',
+        stroke: '#000000',
+        strokeThickness: 3,
+      })
+      .setOrigin(0.5);
+    this.bypassBar = this.add.container(SANC_X, SANC_Y, [track, this.bypassFill, this.bypassText]).setDepth(5).setVisible(false);
   }
 
   private createEventCards(): void {
@@ -673,19 +873,24 @@ export class GameScene extends Phaser.Scene {
   }
 
   private collectBuff(): void {
-    if (!this.buffAvailable || this.gameOver || this.paused) return;
+    if (!this.buffAvailable || this.gameOver || this.paused || this.jail || this.newspaper) return;
 
-    const reward = this.buffRewardNow;
-    this.power += reward;
-    this.sfx.buffCollect();
     this.buffAvailable = false;
     this.buffCard.setVisible(false);
-    this.scheduleNextBuff();
+    this.jail = new JailGame(this, this.sfx, this.buffRewardNow, (reward) => this.finishJail(reward));
+  }
 
+  private finishJail(reward: number): void {
+    this.jail = null;
+    this.scheduleNextBuff();
+    this.power += reward;
+    this.sfx.buffCollect();
+
+    const { width, height } = this.scale;
     const floating = this.add
-      .text(LEFT_CX, BUFF_Y, `+${formatNumber(reward)}`, {
+      .text(width / 2, height / 2, `+${formatNumber(reward)}`, {
         fontFamily: FONT,
-        fontSize: '30px',
+        fontSize: '36px',
         color: TEXT.ok,
         fontStyle: 'bold',
         stroke: '#000000',
@@ -695,22 +900,30 @@ export class GameScene extends Phaser.Scene {
       .setDepth(10);
     this.tweens.add({
       targets: floating,
-      y: floating.y - 80,
+      y: floating.y - 90,
       alpha: 0,
-      duration: 900,
+      duration: 1000,
       onComplete: () => floating.destroy(),
     });
   }
 
   private updateSanctionsText(): void {
-    if (!this.sanctions) return;
+    this.bypassBar.setVisible(this.sanctions);
+    if (!this.sanctions) {
+      this.sanctionsText.setText('');
+      return;
+    }
     this.sanctionsText.setText(`⚠ Санкции: доход −${SANCTIONS_INCOME_PCT}%, цены +${SANCTIONS_PRICE_PCT}%`);
+    const target = this.bypassTarget;
+    this.bypassFill.setScale(Math.min(1, this.sanctionsProgress / target), 1);
+    this.bypassText.setText(`Обход санкций: ${Math.floor(this.sanctionsProgress)} / ${target}`);
   }
 
   private updateBuffUi(): void {
     if (!this.buffAvailable) return;
     const left = Math.max(0, this.buffEndsAt - this.elapsed);
-    this.buffSub.setText(`+${formatNumber(this.buffRewardNow)} Гос.власти • ${Math.ceil(left / 1000)} с`);
+    const reward = `Мини-игра • до +${formatNumber(this.jailRewardMax)}`;
+    this.buffSub.setText(PORTRAIT ? reward : `${reward} • ${Math.ceil(left / 1000)} с`);
     this.buffBar.setScale(left / GAME_CONFIG.buffLifetime, 1);
   }
 
@@ -748,10 +961,10 @@ export class GameScene extends Phaser.Scene {
 
     const upgradesTitle = head(-180, 'УЛУЧШЕНИЯ', '#bae6fd');
     this.upgradesText = body(-154);
-    const buffsTitle = head(10, 'БАФФЫ', '#bbf7d0');
-    this.buffsText = body(36);
-    const debuffsTitle = head(95, 'ДЕБАФФЫ', TEXT.danger);
-    this.debuffsText = body(121);
+    const buffsTitle = head(-50, 'БАФФЫ', '#bbf7d0');
+    this.buffsText = body(-24);
+    this.debuffsTitle = head(60, 'ДЕБАФФЫ', TEXT.danger);
+    this.debuffsText = body(86);
 
     this.effectsWindow = this.add
       .container(width / 2, height / 2, [
@@ -762,7 +975,7 @@ export class GameScene extends Phaser.Scene {
         this.upgradesText,
         buffsTitle,
         this.buffsText,
-        debuffsTitle,
+        this.debuffsTitle,
         this.debuffsText,
       ])
       .setDepth(50)
@@ -770,7 +983,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private toggleEffects(): void {
-    if (this.gameOver || this.paused) return;
+    if (this.gameOver || this.paused || this.jail || this.newspaper) return;
     this.effectsWindow.setVisible(!this.effectsWindow.visible);
     this.updateEffectsWindow();
   }
@@ -800,18 +1013,24 @@ export class GameScene extends Phaser.Scene {
       );
     }
 
+    const buffs: string[] = [];
     if (this.buffAvailable) {
       const left = Math.ceil(Math.max(0, this.buffEndsAt - this.elapsed) / 1000);
-      this.buffsText.setText(
-        `• Посадить видного оппозиционера\n   Нажмите кнопку слева: +${formatNumber(this.buffRewardNow)} Гос.власти (осталось ${left} с)`,
+      buffs.push(
+        '• Посадить видного оппозиционера',
+        `   Мини-игра: до +${formatNumber(this.jailRewardMax)} (осталось ${left} с)`,
       );
-    } else {
-      this.buffsText.setText('Нет активных баффов.');
     }
+    buffs.push(...this.modLines(true));
+    this.buffsText.setText(buffs.length ? buffs.join('\n') : 'Нет активных баффов.');
 
     const debuffs: string[] = [];
     if (this.sanctions) {
-      debuffs.push('• Санкции', `   Доход −${SANCTIONS_INCOME_PCT}%, цены улучшений +${SANCTIONS_PRICE_PCT}%`);
+      debuffs.push(
+        '• Санкции',
+        `   Доход −${SANCTIONS_INCOME_PCT}%, цены улучшений +${SANCTIONS_PRICE_PCT}%`,
+        `   Обход: ${Math.floor(this.sanctionsProgress)} / ${this.bypassTarget} указов (кликайте по указу)`,
+      );
     }
     if (this.rallyActive) {
       debuffs.push(
@@ -819,7 +1038,11 @@ export class GameScene extends Phaser.Scene {
         `   Разогнать: ${formatNumber(this.disperseCost)} Гос.власти`,
       );
     }
+    debuffs.push(...this.modLines(false));
     this.debuffsText.setText(debuffs.length ? debuffs.join('\n') : 'Нет активных дебаффов.');
+
+    this.debuffsTitle.setY(this.buffsText.y + this.buffsText.height + 16);
+    this.debuffsText.setY(this.debuffsTitle.y + 26);
   }
 
   private togglePause(): void {
@@ -1357,6 +1580,7 @@ export class GameScene extends Phaser.Scene {
   private updateHint(): void {
     let stage = 2;
     if (this.totalOwned === 0) stage = this.clicks === 0 && this.power <= 0 ? 0 : 1;
+    else if (this.sanctions) stage = 3;
     if (stage === this.hintStage) return;
     this.hintStage = stage;
 
@@ -1368,6 +1592,9 @@ export class GameScene extends Phaser.Scene {
     } else if (stage === 1) {
       const text = PORTRAIT ? 'Копи Гос.власть и\nпокупай улучшения ↓' : 'Копи Гос.власть и покупай\nулучшения справа →';
       this.hintText.setText(text).setFontSize(16).setColor(TEXT.gold);
+    } else if (stage === 3) {
+      const text = PORTRAIT ? 'САНКЦИИ!\nКЛИКАЙ ПО УКАЗУ' : 'САНКЦИИ! ПОДПИСЫВАЙ УКАЗЫ\nО КОНТРСАНКЦИЯХ';
+      this.hintText.setText(text).setFontSize(16).setColor('#fdba74');
     } else {
       const text = PORTRAIT ? 'КЛИКАЙ\nПО УКАЗУ' : 'КЛИКАЙ ПО УКАЗУ\nили ЖМИ ПРОБЕЛ';
       this.hintText.setText(text).setFontSize(14).setColor(TEXT.muted);
@@ -1375,7 +1602,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private click(x: number, y: number, source: ClickSource): void {
-    if (this.gameOver || this.paused) return;
+    if (this.gameOver || this.paused || this.jail || this.newspaper) return;
 
     const now = this.time.now;
     if (
@@ -1391,6 +1618,7 @@ export class GameScene extends Phaser.Scene {
 
     const gain = this.perClick;
     this.power += gain;
+    if (this.sanctions) this.addBypass();
     this.sfx.click();
     this.burst(x, y);
 
@@ -1478,7 +1706,6 @@ export class GameScene extends Phaser.Scene {
       .setOrigin(0.5)
       .setAlpha(0.7);
 
-    // Уже купленные улучшения (из сохранения) — в порядке покупки, без анимации.
     for (const id of Object.keys(this.owned)) {
       const def = UPGRADES.find((u) => u.id === id);
       if (!def || this.count(id) <= 0) continue;
@@ -1505,7 +1732,6 @@ export class GameScene extends Phaser.Scene {
     return floor;
   }
 
-  /** Дорисовывает на этаже фигурки до числа купленных (но не больше floorMaxSprites). */
   private syncFloor(floor: FloorRow, animate: boolean): void {
     const owned = this.count(floor.def.id);
     const shown = Math.min(owned, GAME_CONFIG.floorMaxSprites);
@@ -1563,7 +1789,6 @@ export class GameScene extends Phaser.Scene {
     this.floorEmpty.setVisible(total === 0 && shown);
   }
 
-  /** Лёгкое покачивание фигурок на видимых этажах. */
   private animateFloors(now: number): void {
     for (const floor of this.floors) {
       if (!floor.container.visible) continue;
@@ -1663,7 +1888,7 @@ export class GameScene extends Phaser.Scene {
 
     bg.setInteractive({ useHandCursor: true });
     if (PORTRAIT) {
-      // На телефоне покупка по отпусканию пальца, чтобы свайп не покупал улучшение.
+
       bg.on('pointerup', () => {
         row.hover = false;
         if (!this.dragMoved) this.buy(def);
@@ -1676,7 +1901,6 @@ export class GameScene extends Phaser.Scene {
     return row;
   }
 
-  /** Сколько улучшений в колонке открыто: первое всегда, каждое следующее — после покупки предыдущего. */
   private unlockedCount(column: UpgradeColumn): number {
     let lastOwned = -1;
     column.rows.forEach((row, i) => {
@@ -1779,7 +2003,16 @@ export class GameScene extends Phaser.Scene {
   private saveProgress(): void {
     if (this.gameOver) return;
     try {
-      localStorage.setItem(GAME_CONFIG.saveKey, JSON.stringify({ power: this.power, owned: this.owned }));
+      const mods = this.mods.map((m) => ({
+        stat: m.stat,
+        multiplier: m.multiplier,
+        left: Math.max(0, m.endsAt - this.elapsed),
+        label: m.label,
+      }));
+      localStorage.setItem(
+        GAME_CONFIG.saveKey,
+        JSON.stringify({ power: this.power, owned: this.owned, events: this.seenEvents, mods }),
+      );
     } catch {}
   }
 
@@ -1792,15 +2025,31 @@ export class GameScene extends Phaser.Scene {
   private loadProgress(): void {
     this.power = 0;
     this.owned = {};
+    this.seenEvents = [];
+    this.mods = [];
     try {
       const raw = localStorage.getItem(GAME_CONFIG.saveKey);
       if (!raw) return;
-      const data = JSON.parse(raw) as { power?: number; owned?: Record<string, number> };
+      const data = JSON.parse(raw) as {
+        power?: number;
+        owned?: Record<string, number>;
+        events?: string[];
+        mods?: { stat: ModStat; multiplier: number; left: number; label: string }[];
+      };
       this.power = data.power ?? 0;
       this.owned = data.owned ?? {};
+      if (Array.isArray(data.events)) this.seenEvents = data.events.filter((id) => typeof id === 'string');
+
+      if (Array.isArray(data.mods)) {
+        this.mods = data.mods
+          .filter((m) => MOD_STATS.includes(m.stat) && typeof m.multiplier === 'number' && m.left > 0)
+          .map((m) => ({ stat: m.stat, multiplier: m.multiplier, endsAt: m.left, label: String(m.label) }));
+      }
     } catch {
       this.power = 0;
       this.owned = {};
+      this.seenEvents = [];
+      this.mods = [];
     }
   }
 }

@@ -7,7 +7,6 @@ const PORTRAIT_WIDTH = 480;
 const PORTRAIT_MIN_HEIGHT = 720;
 const PORTRAIT_MAX_HEIGHT = 1100;
 
-/** Размер игрового поля: широкий для ПК и вертикальный (под форму экрана) для телефонов. */
 function pickGameSize(): { width: number; height: number } {
   if (window.innerWidth >= window.innerHeight) return LANDSCAPE_SIZE;
   const height = Math.round((PORTRAIT_WIDTH * window.innerHeight) / window.innerWidth);
@@ -32,7 +31,6 @@ export function createGame(parent: string): Phaser.Game {
 
   const game = new Phaser.Game(config);
 
-  // Поворот телефона: перестраиваем интерфейс только при смене ориентации.
   let portrait = size.width < size.height;
   window.addEventListener('resize', () => {
     const next = pickGameSize();

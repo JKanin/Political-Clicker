@@ -77,6 +77,12 @@ export class Sfx {
     [784, 988, 1175].forEach((f, i) => this.tone(f, 0.1, { type: 'sine', delay: i * 0.06 }));
   }
 
+  newspaper(): void {
+    this.tone(330, 0.08, { type: 'triangle', volume: 0.06 });
+    this.tone(247, 0.12, { type: 'triangle', volume: 0.06, delay: 0.09 });
+    this.tone(494, 0.16, { type: 'sine', volume: 0.05, delay: 0.2 });
+  }
+
   lose(): void {
     [392, 311, 261, 196].forEach((f, i) => this.tone(f, 0.28, { type: 'triangle', delay: i * 0.22 }));
   }

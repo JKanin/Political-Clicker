@@ -47,7 +47,6 @@ canvas {
   -webkit-tap-highlight-color: transparent;
 }
 
-/* Телефон в вертикальном положении: игра на весь экран без рамок. */
 @media (orientation: portrait) {
   html,
   body,
@@ -68,7 +67,6 @@ canvas {
   }
 }
 
-/* Телефон в горизонтальном положении: убираем отступы, чтобы поле было крупнее. */
 @media (orientation: landscape) and (max-height: 520px) {
   #app {
     padding: 0;
