@@ -31,6 +31,27 @@ export const GAME_CONFIG = {
   buffRewardClicks: 20,
   buffRewardIncomeSeconds: 15,
 
+  // Третья фаза «Дворцовый заговор»: старт на 8–10 минуте игрового времени.
+  plotStartMin: 8 * 60000,
+  plotStartMax: 10 * 60000,
+  plotFirstDelay: 5000,
+  plotIntervalStart: 30000,
+  plotIntervalMin: 12000,
+  plotIntervalShrink: 0.9,
+  plotLifetimeStart: 20000,
+  plotLifetimeMin: 11000,
+  plotLifetimeShrink: 0.95,
+  plotRetryDelay: 3000,
+  plotMaxSimultaneous: 3,
+  plotWavesPerExtraSlot: 3,
+  plotSabotage: 0.6,
+  plotLossShare: 0.12,
+  plotMaxStrikes: 3,
+  plotStrikeRecovery: 150000,
+  plotCatchRewardClicks: 15,
+  plotCatchRewardIncomeSeconds: 12,
+  plotWarnSeconds: 5,
+
   jailRounds: [
     { figures: 6, speed: 45, seconds: 9 },
     { figures: 10, speed: 75, seconds: 10 },

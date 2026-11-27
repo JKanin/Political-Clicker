@@ -31,6 +31,8 @@ export const COLORS = {
   warn: 0xd97706,
   warnFlash: 0xf59e0b,
   sanction: 0xea580c,
+  plot: 0x9f1239,
+  plotDark: 0x3f0a1c,
   buff: 0x8b5cf6,
   buffHover: 0xa78bfa,
 } as const;
@@ -43,6 +45,7 @@ export const TEXT = {
   muted: '#e2e8f0',
   danger: '#fecaca',
   ok: '#86efac',
+  plot: '#fda4af',
 } as const;
 
 export const BRANCH = {

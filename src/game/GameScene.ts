@@ -21,6 +21,9 @@ import {
 
 const SANCTIONS_INCOME_PCT = Math.round(GAME_CONFIG.sanctionsIncomePenalty * 100);
 const SANCTIONS_PRICE_PCT = Math.round(GAME_CONFIG.sanctionsPriceMarkup * 100);
+const PLOT_SABOTAGE_PCT = Math.round(GAME_CONFIG.plotSabotage * 100);
+const PLOT_LOSS_PCT = Math.round(GAME_CONFIG.plotLossShare * 100);
+const PLOT_ARROW_COLOR = '#f43f5e';
 
 const ROW_H = 70;
 const ROW_GAP = 6;
@@ -133,6 +136,17 @@ interface FloorRow {
   container: Phaser.GameObjects.Container;
   sprites: Phaser.GameObjects.Text[];
   count: Phaser.GameObjects.Text;
+  alertBg: Phaser.GameObjects.Rectangle;
+  alertTitle: Phaser.GameObjects.Text;
+  alertSub: Phaser.GameObjects.Text;
+  alertBar: Phaser.GameObjects.Rectangle;
+  alertOn: boolean;
+}
+
+interface Traitor {
+  id: string;
+  lifetime: number;
+  endsAt: number;
 }
 
 interface UpgradeColumn {
@@ -172,6 +186,15 @@ export class GameScene extends Phaser.Scene {
   private sanctionsWave = 0;
   private sanctionsProgress = 0;
   private sanctionsNextAt = 0;
+
+  private plotStartAt = 0;
+  private plot = false;
+  private plotWave = 0;
+  private plotNextAt = 0;
+  private plotStrikes = 0;
+  private plotStrikeClearAt = Infinity;
+  private plotTraitors: Traitor[] = [];
+  private plotText!: Phaser.GameObjects.Text;
 
   private jail: JailGame | null = null;
 
@@ -258,6 +281,13 @@ export class GameScene extends Phaser.Scene {
     this.sanctionsWave = 0;
     this.sanctionsProgress = 0;
     this.sanctionsNextAt = 0;
+    this.plotStartAt = this.rollPlotStart();
+    this.plot = false;
+    this.plotWave = 0;
+    this.plotNextAt = 0;
+    this.plotStrikes = 0;
+    this.plotStrikeClearAt = Infinity;
+    this.plotTraitors = [];
     this.jail = null;
     this.newspaper = null;
     this.nextEventAt = GAME_CONFIG.eventFirstAt;
@@ -393,6 +423,8 @@ export class GameScene extends Phaser.Scene {
     this.elapsed += delta;
     this.updateEvent();
     this.updateSanctions(delta);
+    this.updatePlot();
+    if (this.gameOver) return;
     this.updateBuff();
     this.updateNewspaperEvents();
     if (this.newspaper) return;
@@ -402,19 +434,25 @@ export class GameScene extends Phaser.Scene {
 
     if (this.rallyActive && this.power <= 0) {
       this.power = 0;
-      this.endGame();
+      this.endGame('rally');
       return;
     }
     this.refresh(delta);
   }
 
   private get perClick(): number {
-    const base = UPGRADES.reduce((sum, u) => (u.kind === 'click' ? sum + u.value * this.count(u.id) : sum), 1);
+    const base = UPGRADES.reduce(
+      (sum, u) => (u.kind === 'click' ? sum + u.value * this.count(u.id) * this.sabotageFactor(u.id) : sum),
+      1,
+    );
     return Math.max(1, Math.round(base * this.modFactor('click')));
   }
 
   private get perSecond(): number {
-    const base = UPGRADES.reduce((sum, u) => (u.kind === 'passive' ? sum + u.value * this.count(u.id) : sum), 0);
+    const base = UPGRADES.reduce(
+      (sum, u) => (u.kind === 'passive' ? sum + u.value * this.count(u.id) * this.sabotageFactor(u.id) : sum),
+      0,
+    );
     const afterSanctions = this.sanctions ? base * (1 - GAME_CONFIG.sanctionsIncomePenalty) : base;
     return afterSanctions * this.modFactor('income');
   }
@@ -435,6 +473,21 @@ export class GameScene extends Phaser.Scene {
 
   private get jailRewardMax(): number {
     return Math.round(this.buffRewardNow * Math.max(...GAME_CONFIG.jailRewardMultipliers));
+  }
+
+  private get plotSlots(): number {
+    const extra = Math.floor(this.plotWave / GAME_CONFIG.plotWavesPerExtraSlot);
+    return Math.min(GAME_CONFIG.plotMaxSimultaneous, 1 + extra);
+  }
+
+  private get plotLifetime(): number {
+    const base = GAME_CONFIG.plotLifetimeStart * Math.pow(GAME_CONFIG.plotLifetimeShrink, this.plotWave);
+    return Math.round(Math.max(GAME_CONFIG.plotLifetimeMin, base));
+  }
+
+  private get plotInterval(): number {
+    const base = GAME_CONFIG.plotIntervalStart * Math.pow(GAME_CONFIG.plotIntervalShrink, this.plotWave);
+    return Math.round(Math.max(GAME_CONFIG.plotIntervalMin, base) * Phaser.Math.FloatBetween(0.85, 1.15));
   }
 
   private get totalOwned(): number {
@@ -649,6 +702,178 @@ export class GameScene extends Phaser.Scene {
     this.sfx.success();
     this.cameras.main.flash(250, 34, 197, 94);
     this.showToast('✔ САНКЦИИ ОБОЙДЕНЫ\nДоход и цены вернулись в норму', COLORS.ok);
+  }
+
+  private rollPlotStart(): number {
+    const override = Number(new URLSearchParams(window.location.search).get('plotAt'));
+    if (Number.isFinite(override) && override > 0) return override * 1000;
+    return Phaser.Math.Between(GAME_CONFIG.plotStartMin, GAME_CONFIG.plotStartMax);
+  }
+
+  private sabotageFactor(id: string): number {
+    return this.plotTraitors.some((t) => t.id === id) ? 1 - GAME_CONFIG.plotSabotage : 1;
+  }
+
+  private floorName(id: string): string {
+    return FLOOR_NAMES[id] ?? UPGRADES.find((u) => u.id === id)?.name ?? id;
+  }
+
+  private updatePlot(): void {
+    if (!this.plot) {
+      if (this.elapsed >= this.plotStartAt) this.startPlot();
+      return;
+    }
+
+    for (const traitor of [...this.plotTraitors]) {
+      if (this.elapsed < traitor.endsAt) continue;
+      this.strikePlot(traitor);
+      if (this.gameOver) return;
+    }
+
+    if (this.plotStrikes > 0 && this.elapsed >= this.plotStrikeClearAt) this.healStrike();
+    if (this.elapsed >= this.plotNextAt) this.spawnTraitor();
+  }
+
+  private startPlot(): void {
+    this.plot = true;
+    this.plotNextAt = this.elapsed + GAME_CONFIG.plotFirstDelay;
+    this.cameras.main.shake(400, 0.007);
+    this.sfx.plot();
+    this.flashBorder(COLORS.plot);
+    this.showToast(
+      '🕴 ТРЕТЬЯ ФАЗА: ДВОРЦОВЫЙ ЗАГОВОР\nВ вертикали завелись предатели!\nНаходи их на этажах власти',
+      COLORS.plot,
+    );
+  }
+
+  private spawnTraitor(): void {
+    const retry = this.elapsed + GAME_CONFIG.plotRetryDelay;
+    if (this.plotTraitors.length >= this.plotSlots) {
+      this.plotNextAt = retry;
+      return;
+    }
+    const busy = new Set(this.plotTraitors.map((t) => t.id));
+    const candidates = UPGRADES.filter((u) => this.count(u.id) > 0 && !busy.has(u.id));
+    if (candidates.length === 0) {
+      this.plotNextAt = retry;
+      return;
+    }
+
+    const def = Phaser.Utils.Array.GetRandom(candidates);
+    const lifetime = this.plotLifetime;
+    this.plotTraitors.push({ id: def.id, lifetime, endsAt: this.elapsed + lifetime });
+    this.plotWave += 1;
+    this.plotNextAt = this.elapsed + this.plotInterval;
+
+    this.sfx.plot();
+    this.flashBorder(COLORS.plot);
+    this.showToast(
+      `🕴 ЗАГОВОРЩИК!\nЭтаж: «${this.floorName(def.id)}»\nЗадержи за ${Math.round(lifetime / 1000)} с!`,
+      COLORS.plot,
+    );
+  }
+
+  private catchTraitor(id: string): void {
+    if (this.gameOver || this.paused || this.jail || this.newspaper) return;
+    const traitor = this.plotTraitors.find((t) => t.id === id);
+    if (!traitor) return;
+
+    this.plotTraitors = this.plotTraitors.filter((t) => t !== traitor);
+    const raw = this.perClick * GAME_CONFIG.plotCatchRewardClicks + this.perSecond * GAME_CONFIG.plotCatchRewardIncomeSeconds;
+    const reward = Math.round(Math.max(GAME_CONFIG.buffReward, raw));
+    this.power += reward;
+    this.sfx.success();
+    this.cameras.main.flash(200, 34, 197, 94);
+
+    const floor = this.floors.find((f) => f.def.id === id);
+    if (floor) {
+      this.floatText(floor.container.x + FLOORS_W / 2, floor.container.y + ROW_H / 2, `ЗАДЕРЖАН! +${formatNumber(reward)}`, TEXT.ok, 20, 36);
+    }
+    this.updatePlotUi(this.time.now);
+  }
+
+  private strikePlot(traitor: Traitor): void {
+    this.plotTraitors = this.plotTraitors.filter((t) => t !== traitor);
+    const loss = Math.floor(this.power * GAME_CONFIG.plotLossShare);
+    this.power -= loss;
+    this.plotStrikes += 1;
+    this.plotStrikeClearAt = this.elapsed + GAME_CONFIG.plotStrikeRecovery;
+
+    if (this.plotStrikes >= GAME_CONFIG.plotMaxStrikes) {
+      this.endGame('plot');
+      return;
+    }
+    this.cameras.main.shake(400, 0.008);
+    this.sfx.plotStrike();
+    this.flashBorder(COLORS.plot);
+    this.showToast(
+      `🕴 ЗАГОВОР СОЗРЕЛ: «${this.floorName(traitor.id)}»\n−${PLOT_LOSS_PCT}% Гос.власти (−${formatNumber(loss)})\nПереворот: ${this.plotStrikes} из ${GAME_CONFIG.plotMaxStrikes}`,
+      COLORS.danger,
+    );
+  }
+
+  private healStrike(): void {
+    this.plotStrikes -= 1;
+    this.plotStrikeClearAt = this.plotStrikes > 0 ? this.elapsed + GAME_CONFIG.plotStrikeRecovery : Infinity;
+    this.showToast(`✔ Доверие силовиков восстановлено\nПереворот: ${this.plotStrikes} из ${GAME_CONFIG.plotMaxStrikes}`, COLORS.ok);
+  }
+
+  private setLabel(text: Phaser.GameObjects.Text, value: string): void {
+    if (text.text !== value) text.setText(value);
+  }
+
+  private showAlert(floor: FloorRow, on: boolean): void {
+    floor.alertOn = on;
+    floor.alertBg.setVisible(on);
+    floor.alertTitle.setVisible(on);
+    floor.alertSub.setVisible(on);
+    floor.alertBar.setVisible(on);
+  }
+
+  private updatePlotUi(now: number): void {
+    const warnMs = GAME_CONFIG.plotWarnSeconds * 1000;
+    let above = false;
+    let below = false;
+    let soonest = Infinity;
+
+    for (const [i, floor] of this.floors.entries()) {
+      const traitor = this.plotTraitors.find((t) => t.id === floor.def.id);
+      if (!traitor) {
+        if (floor.alertOn) this.showAlert(floor, false);
+        continue;
+      }
+      const left = Math.max(0, traitor.endsAt - this.elapsed);
+      soonest = Math.min(soonest, left);
+      const slot = i - this.floorOffset;
+      if (slot < 0) above = true;
+      else if (slot >= VISIBLE_ROWS) below = true;
+
+      if (!floor.alertOn) this.showAlert(floor, true);
+      this.setLabel(floor.alertSub, `Нажми, чтобы задержать • ${Math.ceil(left / 1000)} с`);
+      floor.alertBar.setScale(Math.min(1, left / traitor.lifetime), 1);
+      floor.alertBar.setFillStyle(left <= warnMs ? COLORS.danger : COLORS.gold);
+      floor.alertBg.setAlpha(0.82 + 0.16 * Math.sin(now / 110));
+    }
+
+    this.setTextColor(this.floorUpBtn, above ? PLOT_ARROW_COLOR : TEXT.gold);
+    this.setTextColor(this.floorDownBtn, below ? PLOT_ARROW_COLOR : TEXT.gold);
+
+    const count = this.plotTraitors.length;
+    const urgent = count > 0 && soonest <= warnMs;
+    this.plotText.setVisible(this.plot);
+    if (this.plot) {
+      const head = `🕴 Заговор: ${count} • срыв ${this.plotStrikes}/${GAME_CONFIG.plotMaxStrikes}`;
+      const sub = count > 0 ? `ближайший срыв через ${Math.ceil(soonest / 1000)} с` : 'заговорщики затаились';
+      this.setLabel(this.plotText, `${head}\n${sub}`);
+      this.setTextColor(this.plotText, urgent ? TEXT.gold : TEXT.plot);
+    }
+
+    const tab = this.tabButtons[2];
+    if (tab) {
+      const mark = count > 0 ? ` ⚠${Math.ceil(soonest / 1000)}${above ? '↑' : ''}${below ? '↓' : ''}` : '';
+      this.setLabel(tab.label, `ЭТАЖИ${mark}`);
+      this.setTextColor(tab.label, count > 0 ? PLOT_ARROW_COLOR : this.activeTab === 2 ? TEXT.gold : TEXT.cream);
+    }
   }
 
   private disperse(): void {
@@ -1038,6 +1263,15 @@ export class GameScene extends Phaser.Scene {
         `   Разогнать: ${formatNumber(this.disperseCost)} Гос.власти`,
       );
     }
+    if (this.plot) {
+      const left = this.plotTraitors.map((t) => Math.ceil(Math.max(0, t.endsAt - this.elapsed) / 1000));
+      debuffs.push(
+        `• Дворцовый заговор: срыв ${this.plotStrikes} из ${GAME_CONFIG.plotMaxStrikes}`,
+        left.length > 0
+          ? `   Предателей: ${left.length} (этаж −${PLOT_SABOTAGE_PCT}%), ближайший срыв через ${Math.min(...left)} с`
+          : '   Заговорщики затаились',
+      );
+    }
     debuffs.push(...this.modLines(false));
     this.debuffsText.setText(debuffs.length ? debuffs.join('\n') : 'Нет активных дебаффов.');
 
@@ -1130,7 +1364,7 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
-  private endGame(): void {
+  private endGame(reason: 'rally' | 'plot'): void {
     this.gameOver = true;
     this.effectsWindow.setVisible(false);
     this.rallyCard.setVisible(false);
@@ -1141,6 +1375,10 @@ export class GameScene extends Phaser.Scene {
     const { width, height } = this.scale;
     const minutes = Math.floor(this.elapsed / 60000);
     const seconds = Math.floor((this.elapsed % 60000) / 1000);
+    const advice =
+      reason === 'plot'
+        ? 'Совет: следи за этажами власти — заговорщика нужно задержать вовремя'
+        : 'Совет: копи Гос.власть заранее — разгон митинга стоит дорого';
 
     this.add
       .rectangle(0, 0, width, height, COLORS.overlay, 0.92)
@@ -1156,14 +1394,14 @@ export class GameScene extends Phaser.Scene {
       .text(
         width / 2,
         height / 2 - 20,
-        `ВАС СВЕРГЛИ.\nВы продержались ${minutes}:${seconds.toString().padStart(2, '0')}`,
+        `${reason === 'plot' ? 'ЗАГОВОРЩИКИ ЗАХВАТИЛИ ВЛАСТЬ.' : 'ВАС СВЕРГЛИ.'}\nВы продержались ${minutes}:${seconds.toString().padStart(2, '0')}`,
         { fontFamily: FONT, fontSize: '22px', color: TEXT.muted, align: 'center' },
       )
       .setOrigin(0.5)
       .setDepth(101);
 
     this.add
-      .text(width / 2, height / 2 + 28, 'Совет: копи Гос.власть заранее — разгон митинга стоит дорого', {
+      .text(width / 2, height / 2 + 28, advice, {
         fontFamily: FONT,
         fontSize: '16px',
         color: TEXT.muted,
@@ -1394,6 +1632,17 @@ export class GameScene extends Phaser.Scene {
       fontStyle: 'bold',
       wordWrap: PORTRAIT ? { width: LEFT_X - 24 } : undefined,
     });
+
+    this.plotText = this.add
+      .text(PORTRAIT ? LEFT_X : 16, PORTRAIT ? 146 : 78, '', {
+        fontFamily: FONT,
+        fontSize: '12px',
+        color: TEXT.plot,
+        fontStyle: 'bold',
+        lineSpacing: 2,
+        wordWrap: { width: PORTRAIT ? LEFT_W : 280 },
+      })
+      .setVisible(false);
   }
 
   private createCoin(x: number, y: number): Phaser.GameObjects.Container {
@@ -1726,8 +1975,33 @@ export class GameScene extends Phaser.Scene {
     const count = this.add
       .text(FLOORS_W - 8, 3, '', { fontFamily: FONT_HEAD, fontSize: '13px', color: TEXT.muted, fontStyle: 'bold' })
       .setOrigin(1, 0);
-    const container = this.add.container(FLOORS_X, 0, [bg, ground, groundLine, label, count]).setVisible(false);
-    const floor: FloorRow = { def, container, sprites: [], count };
+    const alertBg = this.add
+      .rectangle(0, 0, FLOORS_W, ROW_H, COLORS.plotDark)
+      .setOrigin(0, 0)
+      .setStrokeStyle(3, COLORS.plot)
+      .setInteractive({ useHandCursor: true })
+      .setVisible(false);
+    const alertTitle = this.add
+      .text(FLOORS_W / 2, 22, '🕴️ ЗАГОВОРЩИК!', { fontFamily: FONT_HEAD, fontSize: '18px', color: TEXT.white, fontStyle: 'bold' })
+      .setOrigin(0.5)
+      .setVisible(false);
+    const alertSub = this.add
+      .text(FLOORS_W / 2, 46, '', { fontFamily: FONT, fontSize: '12px', color: TEXT.plot, fontStyle: 'bold' })
+      .setOrigin(0.5)
+      .setVisible(false);
+    const alertBar = this.add.rectangle(0, ROW_H - 5, FLOORS_W, 5, COLORS.gold).setOrigin(0, 0).setVisible(false);
+    if (PORTRAIT) {
+      alertBg.on('pointerup', () => {
+        if (!this.dragMoved) this.catchTraitor(def.id);
+      });
+    } else {
+      alertBg.on('pointerdown', () => this.catchTraitor(def.id));
+    }
+
+    const container = this.add
+      .container(FLOORS_X, 0, [bg, ground, groundLine, label, count, alertBg, alertTitle, alertSub, alertBar])
+      .setVisible(false);
+    const floor: FloorRow = { def, container, sprites: [], count, alertBg, alertTitle, alertSub, alertBar, alertOn: false };
     this.floors.push(floor);
     return floor;
   }
@@ -1750,6 +2024,7 @@ export class GameScene extends Phaser.Scene {
     }
     floor.count.setText(`×${owned}`);
     this.setTextColor(floor.count, TIER_TEXT[tierOf(owned)]);
+    for (const part of [floor.alertBg, floor.alertTitle, floor.alertSub, floor.alertBar]) floor.container.bringToTop(part);
   }
 
   private onFloorPurchased(def: UpgradeDef): void {
@@ -1993,6 +2268,7 @@ export class GameScene extends Phaser.Scene {
     }
 
     this.animateFloors(now);
+    this.updatePlotUi(now);
     this.updateHint();
     this.updateSanctionsText();
     this.updateEventCards();

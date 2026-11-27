@@ -65,6 +65,16 @@ export class Sfx {
     this.tone(420, 0.35, { type: 'sawtooth', volume: 0.05, slideTo: 200 });
   }
 
+  plot(): void {
+    this.tone(196, 0.3, { type: 'sawtooth', volume: 0.05, slideTo: 147 });
+    this.tone(185, 0.45, { type: 'square', volume: 0.03, delay: 0.2, slideTo: 131 });
+  }
+
+  plotStrike(): void {
+    this.tone(110, 0.6, { type: 'sawtooth', volume: 0.07, slideTo: 55 });
+    this.tone(147, 0.4, { type: 'square', volume: 0.04, delay: 0.1, slideTo: 73 });
+  }
+
   success(): void {
     [523, 659, 784].forEach((f, i) => this.tone(f, 0.12, { type: 'triangle', delay: i * 0.08 }));
   }
